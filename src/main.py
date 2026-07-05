@@ -23,7 +23,7 @@ from .data.data_pipeline import build_snapshot
 from .data.ibkr_feed import IBKRFeed
 from .execution.ibkr_broker import IBKRBroker
 from .execution.position_manager import PositionManager
-from .execution.risk import defense_triggered, liquidity_ok
+from .execution.risk import defense_triggered, liquidity_ok, spread_ev
 from .learning.anomaly_detector import AnomalyAction, AnomalyDetector
 from .learning.evaluator import PerformanceMonitor
 from .signals.lightgbm_model import DirectionalClassifier
@@ -146,6 +146,16 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
     else:
         log.warning("No range model; using ATR-based range estimate. Train to enable.")
 
+    # Breach models for the EV (premium-richness) gate. Fail-safe: absent -> gate inactive.
+    breach = {}
+    for side in ("dn", "up"):
+        bp = cfg.model.get(f"breach_{side}_path")
+        bm = cfg.model.get(f"breach_{side}_meta_path")
+        if bp and bm and DirectionalClassifier.exists(bp, bm):
+            breach[side] = DirectionalClassifier.load(bp, bm)
+    if breach:
+        log.info("Loaded breach models: %s", sorted(breach))
+
     intel = cfg.intelligence
     events = EventGuard(intel.get("events_file", "config/events.yaml"))
 
@@ -173,6 +183,22 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
 
     def _manage_spreads(now, spot: float | None = None, force: bool = False) -> None:
         for pos in list(open_spreads):
+            # --- pending limit close: check fill / escalate ---
+            if pos.get("close_trade") is not None:
+                done, actual_cost = broker.close_fill(pos)
+                if done:
+                    _record_close(pos, actual_cost if actual_cost is not None
+                                  else pos["close_cost"], pos["close_reason"], now)
+                    open_spreads.remove(pos)
+                elif force or ((now - pos["close_since"]).total_seconds()
+                               > intel.get("limit_exit_escalate_s", 120)):
+                    broker.escalate_close(pos)
+                    cost_now = feed.spread_close_cost(pos["spread"])
+                    _record_close(pos, cost_now if cost_now is not None
+                                  else pos["close_cost"], pos["close_reason"], now)
+                    open_spreads.remove(pos)
+                continue
+
             filled, credit = broker.spread_fill_status(pos)
             if not filled:
                 # Entry never filled: cancel after 3 minutes (or on force) and forget.
@@ -205,6 +231,15 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
             elif now - pos["open_time"] >= max_hold:
                 reason = "time_stop"
             if reason:
+                # Non-urgent exits (profit target / time stop) try a LIMIT at the current
+                # mid first — don't donate the spread crossing when there's no rush.
+                urgent = force or reason in ("flatten", "stop_loss", "strike_defense")
+                if (not urgent and intel.get("limit_exits", True)):
+                    tr = broker.close_credit_spread(pos, limit_cost=cost)
+                    if tr is not None:
+                        pos.update(close_trade=tr, close_since=now,
+                                   close_reason=reason, close_cost=cost)
+                        continue  # fill/escalation handled on subsequent polls
                 broker.close_credit_spread(pos)
                 _record_close(pos, cost, reason, now)
                 open_spreads.remove(pos)
@@ -299,6 +334,19 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                                     elif intel.get("require_quotes", False):
                                         log.info("Skipped %s: leg quotes unavailable.", kind)
                                         spread = None
+                                # --- EV (premium-richness) gate ---
+                                ev = None
+                                if spread and intel.get("use_ev_gate", False):
+                                    side = "dn" if kind == "bull_put" else "up"
+                                    if side in breach:
+                                        p_b = breach[side].predict_one(snap.features)
+                                        ev = spread_ev(spread["credit"], p_b,
+                                                       pt_frac, stop_mult)
+                                        if ev < intel.get("min_ev", 0.0):
+                                            log.info("Skipped %s: EV %.2f < min (credit %.2f,"
+                                                     " P(breach)=%.2f)", kind, ev,
+                                                     spread["credit"], p_b)
+                                            spread = None
                                 if spread and spread["credit"] >= sp.min_credit:
                                     max_loss = (spread["width"] - spread["credit"]) * 100
                                     qty = max(1, min(max_ct, int(

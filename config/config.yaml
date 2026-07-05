@@ -58,6 +58,10 @@ model:
   meta_path: models/lightgbm_meta.json
   range_path: models/lightgbm_range.txt
   range_meta_path: models/lightgbm_range_meta.json
+  breach_dn_path: models/lightgbm_breach_dn.txt
+  breach_dn_meta_path: models/lightgbm_breach_dn_meta.json
+  breach_up_path: models/lightgbm_breach_up.txt
+  breach_up_meta_path: models/lightgbm_breach_up_meta.json
 
 # Intelligence layer for spread entries/exits. Every feature is fail-safe: missing model,
 # missing quotes, or empty calendar => the previous static behavior.
@@ -71,6 +75,17 @@ model:
 intelligence:
   use_range_strikes: false     # place short strike beyond forecast range x safety (OOS: hurts in calm regimes)
   defense_enabled: false       # close when spot nears the short strike (OOS: whipsaws near static strikes)
+  # EV (premium-richness) gate: sell only when credit x [pt(1-p) - (stop-1)p] >= min_ev,
+  # p = nightly-trained P(spot reaches the short strike within the horizon).
+  # OOS verdict (90d): gate kept the WORSE half of trades (PF 0.70 vs 0.94) — the breach
+  # probabilities don't rank trade quality on this window. Ships OFF. docs/AI_REVIEW.md.
+  use_ev_gate: false
+  min_ev: 0.0                  # require EV >= this (dollars of premium, per share)
+  breach_horizon_bars: 120     # breach-label lookahead (minutes)
+  # Exit fill improvement: non-urgent closes (profit target / time stop) go LIMIT at the
+  # current mid; escalate to market if unfilled. Stops/defense/flatten are always market.
+  limit_exits: true
+  limit_exit_escalate_s: 120   # unfilled limit close escalates to market after this many seconds
   range_horizon_bars: 60       # forecast window for expected max excursion (minutes)
   range_safety_mult: 1.25      # short strike must sit beyond expected range x this
   max_short_otm_pct: 0.01      # if the safe strike is further than 1% OTM, skip (no edge)

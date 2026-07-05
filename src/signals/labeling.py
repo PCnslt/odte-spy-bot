@@ -39,6 +39,35 @@ def make_labels(close: pd.Series, horizon_bars: int = 5,
             pd.Series(valid, index=close.index, name="valid"))
 
 
+def make_breach_labels(high: pd.Series, low: pd.Series, close: pd.Series,
+                       horizon_bars: int = 120,
+                       threshold_pct: float = 0.002) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """Directional BREACH labels for the premium-richness (EV) gate.
+
+    breach_dn[t] = 1 if price falls >= threshold_pct below close[t] within the horizon
+                   (the bull-put seller's risk event: spot reaching the short put).
+    breach_up[t] = 1 if price rises >= threshold_pct above close[t] within the horizon
+                   (the bear-call seller's risk event).
+    Returns (breach_dn, breach_up, valid_mask).
+    """
+    n = len(close)
+    c = close.to_numpy()
+    h = high.to_numpy()
+    l = low.to_numpy()
+    dn = np.zeros(n, dtype=np.int8)
+    up = np.zeros(n, dtype=np.int8)
+    valid = np.zeros(n, dtype=bool)
+    for i in range(n - horizon_bars):
+        lw = l[i + 1: i + 1 + horizon_bars].min()
+        hw = h[i + 1: i + 1 + horizon_bars].max()
+        dn[i] = 1 if (c[i] - lw) / c[i] >= threshold_pct else 0
+        up[i] = 1 if (hw - c[i]) / c[i] >= threshold_pct else 0
+        valid[i] = True
+    return (pd.Series(dn, index=close.index, name="breach_dn"),
+            pd.Series(up, index=close.index, name="breach_up"),
+            pd.Series(valid, index=close.index, name="valid"))
+
+
 def make_range_labels(high: pd.Series, low: pd.Series, close: pd.Series,
                       horizon_bars: int = 60) -> tuple[pd.Series, pd.Series]:
     """Forward MAX EXCURSION labels for range forecasting (the spread-seller's target).

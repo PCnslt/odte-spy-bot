@@ -54,6 +54,21 @@ class RiskCalculator:
 
 
 # --- credit-spread decision helpers (pure, unit-tested) ---------------------------
+def spread_ev(credit: float, p_breach: float, pt_frac: float = 0.5,
+              stop_mult: float = 2.0) -> float:
+    """Premium-richness proxy CONSISTENT WITH THE EXIT STRUCTURE.
+
+    Outcomes are approximately binary under our management: no-breach -> profit target
+    (+pt_frac x credit); breach -> stop (-(stop_mult - 1) x credit). So
+        EV ~= credit x [ pt_frac x (1 - p) - (stop_mult - 1) x p ]
+    With pt=0.5, stop=2x this is positive iff P(breach) < 1/3. (A width-based EV is WRONG
+    here: max loss requires expiry through the long strike, but our stop fires at a touch —
+    loss-given-breach ~= credit, not width. The width version blocked 100% of entries.)"""
+    p = min(max(p_breach, 0.0), 1.0)
+    return credit * (pt_frac * (1 - p) - (stop_mult - 1) * p)
+
+
+
 def defense_triggered(kind: str, spot: float, short_strike: float, buffer_pct: float) -> bool:
     """True when the underlying threatens the SHORT strike and the spread should be closed
     defensively, regardless of premium P&L. bull_put: danger is spot falling to the strike;

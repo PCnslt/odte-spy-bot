@@ -25,13 +25,13 @@ from ..data.data_pipeline import has_vix, load_bars
 from ..data.polygon_options import PolygonOptions
 from ..learning.evaluator import summarize
 from ..signals.feature_engineering import build_features
-from ..signals.labeling import make_labels, make_range_labels
+from ..signals.labeling import make_breach_labels, make_labels, make_range_labels
 from ..signals.lightgbm_model import DirectionalClassifier
 from ..signals.range_model import RangeForecaster, dynamic_short_otm
 from ..signals.regime_classifier import classify_regime
 from ..signals.signal_generator import SignalGenerator
 from ..execution.position_manager import PositionManager
-from ..execution.risk import defense_triggered
+from ..execution.risk import defense_triggered, spread_ev
 from ..utils.config import load_config
 from ..utils.logger import get_logger
 
@@ -116,11 +116,13 @@ def _aligned_legs(poly, spread, expiry):
 
 
 def simulate(cfg, bars, features, probs, poly, include_vix, allow_dates=None,
-             range_preds=None):
+             range_preds=None, breach_preds=None):
     """`range_preds`: optional per-bar expected-range forecasts (fraction of spot). When
     given, short strikes are placed beyond range x safety (skip when > cap) and a
     strike-defense exit closes the spread if SPY reaches the short strike — mirroring the
-    live loop's intelligence layer."""
+    live loop's intelligence layer.
+    `breach_preds`: optional (p_dn, p_up) per-bar arrays for the EV gate: skip entries
+    where credit - width x P(breach) < intelligence.min_ev."""
     siggen = SignalGenerator(cfg)
     pm = PositionManager(cfg)
     equity = float(cfg.risk["account"]["starting_equity"])
@@ -195,6 +197,11 @@ def simulate(cfg, bars, features, probs, poly, include_vix, allow_dates=None,
         if credit < min_credit:
             i += 1
             continue
+        if breach_preds is not None:
+            p_b = float(breach_preds[0][i] if kind == "bull_put" else breach_preds[1][i])
+            if spread_ev(credit, p_b, pt, stop_mult) < cfg.intelligence.get("min_ev", 0.0):
+                i += 1
+                continue
         max_loss_per = (spread["width"] - credit) * 100
         if max_loss_per <= 0:
             i += 1
@@ -244,9 +251,12 @@ def simulate(cfg, bars, features, probs, poly, include_vix, allow_dates=None,
     return trades, equity
 
 
-def run(cfg, days=90, train_win=20, test_win=5, quantile=None, verbose=True, smart=False):
+def run(cfg, days=90, train_win=20, test_win=5, quantile=None, verbose=True, smart=False,
+        ev_gate=False):
     """`smart=True` mirrors the live intelligence layer: per-fold range forecaster trained
-    on the fold's train window drives dynamic strike placement + strike-defense exits."""
+    on the fold's train window drives dynamic strike placement + strike-defense exits.
+    `ev_gate=True` trains per-fold breach classifiers and skips entries whose credit does
+    not cover the modeled breach risk (the premium-richness gate)."""
     poly = PolygonOptions.from_config(cfg)
     bars = load_bars(cfg, days, download=False, poly=poly)
     include_vix = has_vix(bars)
@@ -257,6 +267,11 @@ def run(cfg, days=90, train_win=20, test_win=5, quantile=None, verbose=True, sma
     range_y, range_valid = make_range_labels(
         bars["high"], bars["low"], bars["close"],
         horizon_bars=cfg.intelligence.get("range_horizon_bars", 60)) if smart else (None, None)
+    if ev_gate:
+        b_dn, b_up, b_valid = make_breach_labels(
+            bars["high"], bars["low"], bars["close"],
+            horizon_bars=cfg.intelligence.get("breach_horizon_bars", 120),
+            threshold_pct=cfg.spread.short_otm_pct)
     et_dates = np.array(bars.index.tz_convert(ET).date)
     finite = features.notna().all(axis=1).to_numpy() & np.isfinite(features.to_numpy()).all(axis=1)
     base_mask = valid.to_numpy() & finite
@@ -299,8 +314,24 @@ def run(cfg, days=90, train_win=20, test_win=5, quantile=None, verbose=True, sma
                          early_stopping_rounds=mp["train"]["early_stopping_rounds"])
                 range_preds = rf.predict(features)
 
+        breach_preds = None
+        if ev_gate:
+            bm_mask = (b_valid.to_numpy() & finite & np.isin(et_dates, list(train_dates)))
+            Xb = features[bm_mask]
+            if len(Xb) >= 100 and b_dn[bm_mask].nunique() > 1 and b_up[bm_mask].nunique() > 1:
+                preds = []
+                for yb in (b_dn[bm_mask], b_up[bm_mask]):
+                    bc = DirectionalClassifier(params=mp["lightgbm"],
+                                               feature_columns=list(features.columns))
+                    bc.train(Xb, yb, valid_fraction=mp["train"]["valid_fraction"],
+                             num_boost_round=mp["train"]["num_boost_round"],
+                             early_stopping_rounds=mp["train"]["early_stopping_rounds"])
+                    preds.append(bc.predict_proba(features))
+                breach_preds = (preds[0], preds[1])
+
         trades, _ = simulate(cfg, bars, features, probs, poly, include_vix,
-                             allow_dates=test_dates, range_preds=range_preds)
+                             allow_dates=test_dates, range_preds=range_preds,
+                             breach_preds=breach_preds)
         all_oos.extend(trades)
         r = summarize(trades)
         fold_rows.append({"from": min(test_dates), "to": max(test_dates),
@@ -311,6 +342,8 @@ def run(cfg, days=90, train_win=20, test_win=5, quantile=None, verbose=True, sma
     oos = summarize(all_oos)
     if verbose:
         mode = "SMART (range strikes + defense)" if smart else "BASELINE (static strikes)"
+        if ev_gate:
+            mode += " + EV GATE"
         print(f"\n=== CREDIT-SPREAD walk-forward OUT-OF-SAMPLE — {mode} ===")
         print(f"{len(dates)} trading days, {len(fold_rows)} folds, width=${cfg.spread.width}, "
               f"vix={'yes' if include_vix else 'no'}")
@@ -331,6 +364,8 @@ def main():
     p.add_argument("--no-breakout", action="store_true")
     p.add_argument("--smart", action="store_true",
                    help="use the intelligence layer: range-model strikes + defense exits")
+    p.add_argument("--ev", action="store_true",
+                   help="EV gate: skip entries where credit < width x P(breach) + min_ev")
     args = p.parse_args()
     cfg = load_config()
     if args.no_breakout:
@@ -342,7 +377,7 @@ def main():
             cfg.intelligence._data[k] = True
             setattr(cfg.intelligence, k, True)
     run(cfg, days=args.days, train_win=args.train, test_win=args.test,
-        quantile=args.quantile, smart=args.smart)
+        quantile=args.quantile, smart=args.smart, ev_gate=args.ev)
 
 
 if __name__ == "__main__":

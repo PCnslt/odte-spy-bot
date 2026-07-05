@@ -78,6 +78,48 @@ shipped ON — they avoid costs or add information without adding risk.
 the strategy out-of-sample. This is why the harness exists, and why proposals — human or
 AI — get tested, not trusted.
 
+---
+
+# Round 2 — the "5 remaining edges" proposal (2026-07-05)
+
+The second proposal was well-calibrated (numeric, tabular, testable). Dispositions:
+
+| # | Proposal | Disposition |
+|---|---|---|
+| 1 | Predictive regime risk-multiplier (sizing) | **Rejected — no room to act.** At $10k equity, 2% risk (~$200) < 1 contract's max loss (~$450) → qty is pinned at 1 on every trade. Sizing intelligence is a no-op until equity ~5×. |
+| 2 | IV/RV premium gate | **Built as the EV gate; failed OOS; ships OFF.** See below. |
+| 3 | Predicted exit slippage | **Built the mechanical version: limit-first exits (ON).** No historical quotes exist to train a slippage model, so prediction would be fiction. Instead: non-urgent closes (profit target / time stop) go LIMIT at the current mid and escalate to market after 120 s; stops/defense/flatten stay market. Judged by real paper fills. |
+| 4 | K-Means/GMM market-state clusters | **Rejected — underpowered.** 107 OOS trades across k clusters = noise-level win rates per cluster; supervised breach/direction models already learn state→risk with better statistics. |
+| 5 | Dynamic profit target (theta/IV-conditioned) | **Deferred.** Multi-arm exit testing needs more trades than exist; queued until the paper account accumulates ≥100 real spreads. |
+
+## The EV gate: built, corrected once, still failed — a useful negative result
+
+Design: nightly breach classifiers P(spot reaches the short strike within 120 min), gate on
+exit-structure EV = credit × [pt(1−p) − (stop−1)p] (positive iff p < 1/3 at pt=50%/stop=2×).
+
+- **First version (width-based EV) blocked 100% of entries** — instructive bug: max loss
+  needs expiry through the long strike, but our stop fires on a touch, so loss-given-breach
+  ≈ 1× credit, not the $5 width. EV must match the exit structure it lives under.
+- **Corrected version: 53/107 trades passed the gate — the worse half.** OOS PF 0.70 vs
+  baseline 0.94, −$5.69/trade vs −$1.04. The breach probabilities are real (the model
+  learns *that* vol clusters) but do not *rank* entry quality over this window.
+
+| Variant (90d OOS) | Trades | Win | PF | $/trade |
+|---|---|---|---|---|
+| Baseline | 107 | 63.6% | **0.94** | **−$1.04** |
+| + EV gate (corrected) | 53 | 60.4% | 0.70 | −$5.69 |
+
+Ships implemented but **OFF** (`intelligence.use_ev_gate`). The breach models still train
+nightly — their probabilities are logged and may prove useful once more data exists to
+evaluate them on (e.g., regime-conditional gating with a year of history).
+
+## Running tally of the gauntlet
+
+Ideas proposed (by humans and AIs) that *sounded* right: **6**. Survived out-of-sample:
+**0 strategy changes**; survivors are cost-avoidance mechanics only (liquidity gate,
+quote-mid entries, limit-first exits, event guard). The baseline strategy remains the
+best known configuration. This is what edge-hunting actually looks like.
+
 ## Risk assessment of the adopted design (no bullshit)
 
 - **The range model can be wrong at exactly the wrong time.** Vol forecasts fail hardest

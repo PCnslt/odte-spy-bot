@@ -189,9 +189,12 @@ class IBKRBroker(Broker):
                 "quantity": quantity, "open_time": datetime.now(),
                 "credit": abs(min_credit)}
 
-    def close_credit_spread(self, pos: dict) -> None:
-        """Unwind the vertical with a market combo order (paper: guaranteed exit)."""
-        from ib_insync import MarketOrder
+    def close_credit_spread(self, pos: dict, limit_cost: Optional[float] = None):
+        """Unwind the vertical. Market order by default (guaranteed exit). With
+        `limit_cost`, place a LIMIT close at that cost instead — the combo is priced
+        negatively, so paying at most `cost` means selling the package at -(cost). Returns
+        the close Trade when one was placed (callers track fills / escalate), else None."""
+        from ib_insync import LimitOrder, MarketOrder
 
         # Cancel the entry order if it never filled.
         if pos["trade"].orderStatus.status in ("PreSubmitted", "Submitted"):
@@ -199,9 +202,36 @@ class IBKRBroker(Broker):
             self.ib.cancelOrder(pos["order"])
             if not filled:
                 log.info("Spread entry unfilled; cancelled, nothing to unwind.")
-                return
-        self.ib.placeOrder(pos["combo"], MarketOrder("SELL", pos["quantity"]))
+                return None
+        if limit_cost is not None:
+            order = LimitOrder("SELL", pos["quantity"], round(-abs(limit_cost), 2), tif="DAY")
+            trade = self.ib.placeOrder(pos["combo"], order)
+            log.info("Spread close (LIMIT @ cost %.2f) sent x%d", limit_cost, pos["quantity"])
+            return trade
+        trade = self.ib.placeOrder(pos["combo"], MarketOrder("SELL", pos["quantity"]))
         log.info("Spread close (market) sent x%d", pos["quantity"])
+        return trade
+
+    def escalate_close(self, pos: dict) -> None:
+        """Cancel an unfilled limit close and exit at market instead."""
+        from ib_insync import MarketOrder
+
+        ct = pos.get("close_trade")
+        if ct is not None and ct.orderStatus.status not in ("Filled", "Cancelled"):
+            self.ib.cancelOrder(ct.order)
+        self.ib.placeOrder(pos["combo"], MarketOrder("SELL", pos["quantity"]))
+        log.info("Limit close escalated to market x%d", pos["quantity"])
+
+    @staticmethod
+    def close_fill(pos: dict) -> tuple[bool, Optional[float]]:
+        """(filled?, actual close cost) for a pending limit close."""
+        ct = pos.get("close_trade")
+        if ct is None:
+            return False, None
+        st = ct.orderStatus
+        if st.status == "Filled":
+            return True, abs(st.avgFillPrice) if st.avgFillPrice else None
+        return False, None
 
     def spread_fill_status(self, pos: dict) -> tuple[bool, float]:
         """(filled?, avg_fill_credit). Combo fill price is negative for a credit."""

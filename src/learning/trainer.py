@@ -11,7 +11,7 @@ from pathlib import Path
 
 from ..data.data_pipeline import build_training_set, has_vix, load_bars
 from ..signals.feature_engineering import build_features
-from ..signals.labeling import make_range_labels
+from ..signals.labeling import make_breach_labels, make_range_labels
 from ..signals.lightgbm_model import DirectionalClassifier
 from ..signals.range_model import RangeForecaster
 from ..utils.config import load_config
@@ -55,6 +55,46 @@ def train_range(cfg, days: int, download: bool = False) -> RangeForecaster:
              num_boost_round=mp["train"]["num_boost_round"],
              early_stopping_rounds=mp["train"]["early_stopping_rounds"])
     return rf
+
+
+def build_breach_training_sets(cfg, bars):
+    """Two (X, y) sets for the EV gate: P(down-breach) and P(up-breach) of the static
+    short-strike distance within the breach horizon."""
+    include_vix = has_vix(bars)
+    features = build_features(bars, include_vix=include_vix)
+    dn, up, valid = make_breach_labels(
+        bars["high"], bars["low"], bars["close"],
+        horizon_bars=cfg.intelligence.get("breach_horizon_bars", 120),
+        threshold_pct=cfg.spread.short_otm_pct)
+    mask = valid & features.notna().all(axis=1)
+    X = features[mask]
+    return X, dn[mask], up[mask]
+
+
+def train_breach(cfg, days: int) -> tuple[DirectionalClassifier, DirectionalClassifier]:
+    bars = load_bars(cfg, days, download=False)
+    X, ydn, yup = build_breach_training_sets(cfg, bars)
+    mp = cfg.model_params
+    models = []
+    for y in (ydn, yup):
+        clf = DirectionalClassifier(params=mp["lightgbm"], feature_columns=list(X.columns))
+        clf.train(X, y, valid_fraction=mp["train"]["valid_fraction"],
+                  num_boost_round=mp["train"]["num_boost_round"],
+                  early_stopping_rounds=mp["train"]["early_stopping_rounds"])
+        models.append(clf)
+    return models[0], models[1]
+
+
+def _breach_logloss(clf: DirectionalClassifier, cfg, days: int, side: str) -> float:
+    import numpy as np
+
+    bars = load_bars(cfg, days, download=False)
+    X, ydn, yup = build_breach_training_sets(cfg, bars)
+    y = ydn if side == "dn" else yup
+    split = int(len(X) * (1 - cfg.model_params["train"]["valid_fraction"]))
+    proba = clf.predict_proba(X.iloc[split:]).clip(1e-15, 1 - 1e-15)
+    yv = y.iloc[split:].to_numpy()
+    return float(-(yv * np.log(proba) + (1 - yv) * np.log(1 - proba)).mean())
 
 
 def _validation_mae(rf: RangeForecaster, cfg, days: int) -> float:
@@ -122,6 +162,23 @@ def main() -> None:
     if result["range_updated"]:
         rf.save(rpath, rmeta)
         log.info("Saved range model to %s", rpath)
+
+    # --- breach models (EV / premium-richness gate) ---
+    bdn, bup = train_breach(cfg, days)
+    for side, clf in (("dn", bdn), ("up", bup)):
+        bpath = cfg.model.get(f"breach_{side}_path")
+        bmeta = cfg.model.get(f"breach_{side}_meta_path")
+        key = f"breach_{side}_updated"
+        result[key] = True
+        if args.retrain and DirectionalClassifier.exists(bpath, bmeta):
+            new_ll = _breach_logloss(clf, cfg, days, side)
+            old_ll = _breach_logloss(DirectionalClassifier.load(bpath, bmeta), cfg, days, side)
+            log.info("Breach-%s retrain check: new=%.4f vs old=%.4f", side, new_ll, old_ll)
+            if new_ll >= old_ll:
+                result[key] = False
+        if result[key]:
+            clf.save(bpath, bmeta)
+            log.info("Saved breach-%s model to %s", side, bpath)
 
     print(json.dumps(result))
 

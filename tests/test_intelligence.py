@@ -5,9 +5,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from src.execution.risk import defense_triggered, liquidity_ok
+from src.execution.risk import defense_triggered, liquidity_ok, spread_ev
 from src.signals.feature_engineering import build_features
-from src.signals.labeling import make_range_labels
+from src.signals.labeling import make_breach_labels, make_range_labels
 from src.signals.range_model import RangeForecaster, atr_range_estimate, dynamic_short_otm
 from src.utils.events import EventGuard
 
@@ -82,6 +82,33 @@ def test_liquidity_ok_gate():
     assert not liquidity_ok(float("nan"), 1.02, 0.70, 0.72, 0.30, 0.25)
     assert not liquidity_ok(None, 1.02, 0.70, 0.72, 0.30, 0.25)
     assert not liquidity_ok(1.00, 1.02, 0.70, 0.72, credit=0.0, max_frac=0.25)
+
+
+# --- breach labels + EV gate ------------------------------------------------------
+def test_breach_labels_directional(synthetic_bars):
+    dn, up, valid = make_breach_labels(synthetic_bars["high"], synthetic_bars["low"],
+                                       synthetic_bars["close"], horizon_bars=30,
+                                       threshold_pct=0.002)
+    assert set(dn[valid].unique()) <= {0, 1} and set(up[valid].unique()) <= {0, 1}
+    assert not valid.iloc[-1]
+    # Consistency with the range label: any breach implies max excursion >= threshold.
+    rng, rvalid = make_range_labels(synthetic_bars["high"], synthetic_bars["low"],
+                                    synthetic_bars["close"], horizon_bars=30)
+    both = valid & rvalid
+    breached = (dn[both] == 1) | (up[both] == 1)
+    assert (rng[both][breached] >= 0.002 - 1e-12).all()
+
+
+def test_spread_ev_exit_structure_math():
+    # pt=0.5, stop=2x: breakeven at P(breach)=1/3.
+    assert abs(spread_ev(0.30, 1 / 3, 0.5, 2.0)) < 1e-12
+    assert spread_ev(0.30, 0.20, 0.5, 2.0) > 0        # cheap risk -> positive EV
+    assert spread_ev(0.30, 0.50, 0.5, 2.0) < 0        # rich risk -> negative EV
+    # No breach at all -> full profit-target expectation.
+    assert abs(spread_ev(0.30, 0.0, 0.5, 2.0) - 0.15) < 1e-12
+    # Probability clamped to [0, 1].
+    assert spread_ev(0.30, -1.0, 0.5, 2.0) == spread_ev(0.30, 0.0, 0.5, 2.0)
+    assert spread_ev(0.30, 2.0, 0.5, 2.0) == spread_ev(0.30, 1.0, 0.5, 2.0)
 
 
 # --- event guard ----------------------------------------------------------------
