@@ -1,0 +1,296 @@
+"""Defined-risk 0DTE CREDIT SPREAD backtester + walk-forward (premium SELLING).
+
+Rationale: buying 0DTE premium loses to theta+spread (proven — see walkforward.py). Selling a
+defined-risk vertical flips the sign of theta: you collect the decay. Bullish signal -> sell a
+bull PUT spread (below price); bearish -> sell a bear CALL spread (above price). Max loss is
+capped at (width - credit), so position sizing is by that max loss.
+
+Everything uses REAL Polygon option bars for BOTH legs. Fills cross the spread (slippage) and
+pay commission on all four legs (open + close, two legs each).
+
+    python -m src.research.spreads --days 90 --train 20 --test 5 --quantile 0.15
+"""
+from __future__ import annotations
+
+import argparse
+from dataclasses import dataclass
+from datetime import datetime, time, timedelta
+
+import numpy as np
+import pandas as pd
+
+from ..backtest import ET
+from ..common import MarketSnapshot, Signal
+from ..data.data_pipeline import has_vix, load_bars
+from ..data.polygon_options import PolygonOptions
+from ..learning.evaluator import summarize
+from ..signals.feature_engineering import build_features
+from ..signals.labeling import make_labels
+from ..signals.lightgbm_model import DirectionalClassifier
+from ..signals.regime_classifier import classify_regime
+from ..signals.signal_generator import SignalGenerator
+from ..execution.position_manager import PositionManager
+from ..utils.config import load_config
+from ..utils.logger import get_logger
+
+log = get_logger("spreads")
+
+
+@dataclass
+class SpreadTrade:
+    open_time: datetime
+    close_time: datetime
+    kind: str            # bull_put | bear_call
+    credit: float
+    exit_cost: float
+    quantity: int
+    exit_reason: str
+    commission: float
+
+    @property
+    def pnl(self) -> float:
+        return (self.credit - self.exit_cost) * 100 * self.quantity - self.commission
+
+    @property
+    def hold_minutes(self) -> float:
+        return (self.close_time - self.open_time).total_seconds() / 60.0
+
+    @property
+    def won(self) -> bool:
+        return self.pnl > 0
+
+
+def _parse(s: str) -> time:
+    h, m = map(int, s.split(":"))
+    return time(h, m)
+
+
+def build_spread(poly: PolygonOptions, expiry, kind: str, spot: float, cfg) -> dict | None:
+    """Resolve real short/long legs from the real listed chain. None if strikes unavailable."""
+    width = cfg.spread.width
+    otm = cfg.spread.short_otm_pct
+    chain = poly.list_contracts(expiry)
+    if kind == "bull_put":
+        side = chain[chain["type"] == "P"].sort_values("strike")
+        target = spot * (1 - otm)
+        below = side[side["strike"] <= target]
+        if below.empty:
+            return None
+        short = below.iloc[-1]
+        long_target = short["strike"] - width
+        longs = side[side["strike"] <= long_target]
+        if longs.empty:
+            return None
+        long = longs.iloc[-1]
+    else:  # bear_call
+        side = chain[chain["type"] == "C"].sort_values("strike")
+        target = spot * (1 + otm)
+        above = side[side["strike"] >= target]
+        if above.empty:
+            return None
+        short = above.iloc[0]
+        long_target = short["strike"] + width
+        longs = side[side["strike"] >= long_target]
+        if longs.empty:
+            return None
+        long = longs.iloc[0]
+    if short["ticker"] == long["ticker"]:
+        return None
+    return {"kind": kind, "short_ticker": short["ticker"], "long_ticker": long["ticker"],
+            "short_strike": float(short["strike"]), "long_strike": float(long["strike"]),
+            "width": abs(float(short["strike"]) - float(long["strike"]))}
+
+
+def _aligned_legs(poly, spread, expiry):
+    sb = poly.option_bars(spread["short_ticker"], expiry)
+    lb = poly.option_bars(spread["long_ticker"], expiry)
+    if sb.empty or lb.empty:
+        return None
+    long_close = lb["close"].reindex(sb.index, method="ffill")
+    df = pd.DataFrame({"short": sb["close"], "long": long_close}).dropna()
+    return df if not df.empty else None
+
+
+def simulate(cfg, bars, features, probs, poly, include_vix, allow_dates=None):
+    siggen = SignalGenerator(cfg)
+    pm = PositionManager(cfg)
+    equity = float(cfg.risk["account"]["starting_equity"])
+    risk_pct = cfg.risk["per_trade"]["risk_pct"]
+    max_ct, min_ct = cfg.risk["per_trade"]["max_contracts"], cfg.risk["per_trade"]["min_contracts"]
+    slip = cfg.risk["commissions"]["slippage_frac"]
+    comm = cfg.risk["commissions"]["per_contract"]
+    open_t, no_new_t = _parse(cfg.session.market_open), _parse(cfg.session.no_new_trades_after)
+    flatten_t = _parse(cfg.session.flatten_time)
+    # Spreads hold for theta — use the spread-specific max hold, NOT the scalper's 10-min stop.
+    time_stop = timedelta(minutes=cfg.spread.get("max_hold_minutes", 240))
+    pt, stop_mult = cfg.spread.profit_target_frac, cfg.spread.stop_mult
+    min_credit = cfg.spread.min_credit
+
+    idx_utc = bars.index
+    local = idx_utc.tz_convert(ET)
+    highs, lows, closes, vols = (bars["high"].to_numpy(), bars["low"].to_numpy(),
+                                 bars["close"].to_numpy(), bars["volume"].to_numpy())
+    trades: list[SpreadTrade] = []
+    i, n = 0, len(bars)
+    while i < n:
+        now = local[i].to_pydatetime()
+        t = now.time()
+        if not (open_t <= t < no_new_t) or (allow_dates is not None and now.date() not in allow_dates):
+            i += 1
+            continue
+        frow = features.iloc[i]
+        price = float(closes[i])
+        snap = MarketSnapshot(
+            timestamp=idx_utc[i].to_pydatetime(), spy_price=price, spy_volume=float(vols[i]),
+            vwap=price * (1 + float(frow["vwap_dev"])), atr_5min=float(frow["atr_5"]),
+            rvol=float(frow["rvol"]),
+            high_5min=float(highs[max(i - 5, 0):i].max()) if i else price,
+            low_5min=float(lows[max(i - 5, 0):i].min()) if i else price,
+            vix=float(frow.get("vix", 0.0)) if include_vix else float("nan"),
+            regime=classify_regime(frow), ml_prob_up=float(probs[i]), features=frow.to_dict())
+
+        decision = siggen.generate(snap)
+        if decision.signal == Signal.NO_TRADE:
+            i += 1
+            continue
+        ok, _ = pm.can_open(now, equity, 0)
+        if not ok:
+            i += 1
+            continue
+
+        kind = "bull_put" if decision.signal == Signal.BUY_CALL else "bear_call"
+        expiry = now.date()
+        spread = build_spread(poly, expiry, kind, price, cfg)
+        if spread is None:
+            i += 1
+            continue
+        legs = _aligned_legs(poly, spread, expiry)
+        if legs is None:
+            i += 1
+            continue
+        entry_ts = idx_utc[i]
+        fwd = legs.loc[legs.index >= entry_ts]
+        if fwd.empty:
+            i += 1
+            continue
+        e = fwd.iloc[0]
+        credit = e["short"] * (1 - slip) - e["long"] * (1 + slip)   # net premium received
+        if credit < min_credit:
+            i += 1
+            continue
+        max_loss_per = (spread["width"] - credit) * 100
+        if max_loss_per <= 0:
+            i += 1
+            continue
+        qty = int((risk_pct * equity) // max_loss_per)
+        qty = max(min_ct, min(max_ct, qty))
+        pm.on_open()
+
+        entry_bar_ts = fwd.index[0]
+        day_flat = pd.Timestamp(datetime.combine(expiry, flatten_t), tz=ET).tz_convert("UTC")
+        deadline = min(entry_bar_ts + time_stop, day_flat)
+        walk = legs.loc[(legs.index > entry_bar_ts) & (legs.index <= deadline)]
+
+        exit_cost, reason, exit_ts = None, None, entry_bar_ts
+        tp_cost = credit * (1 - pt)
+        sl_cost = min(credit * stop_mult, spread["width"])
+        for ots, row in walk.iterrows():
+            cost = row["short"] * (1 + slip) - row["long"] * (1 - slip)  # cost to close now
+            if cost <= tp_cost:
+                exit_cost, reason, exit_ts = tp_cost, "take_profit", ots
+                break
+            if cost >= sl_cost:
+                exit_cost, reason, exit_ts = sl_cost, "stop_loss", ots
+                break
+        if exit_cost is None:
+            last = legs.loc[legs.index <= deadline].iloc[-1]
+            exit_cost = max(last["short"] * (1 + slip) - last["long"] * (1 - slip), 0.0)
+            reason = "flatten" if deadline == day_flat else "time_stop"
+            exit_ts = legs.loc[legs.index <= deadline].index[-1]
+
+        tr = SpreadTrade(entry_bar_ts.to_pydatetime(), exit_ts.to_pydatetime(), kind,
+                         round(credit, 2), round(exit_cost, 2), qty, reason,
+                         commission=comm * qty * 4)
+        trades.append(tr)
+        equity += tr.pnl
+        pm.record_result(tr.pnl)
+        j = int(idx_utc.searchsorted(exit_ts, side="right"))
+        i = max(j, i + 1)
+    return trades, equity
+
+
+def run(cfg, days=90, train_win=20, test_win=5, quantile=None, verbose=True):
+    poly = PolygonOptions.from_config(cfg)
+    bars = load_bars(cfg, days, download=False, poly=poly)
+    include_vix = has_vix(bars)
+    features = build_features(bars, include_vix=include_vix)
+    mp = cfg.model_params
+    labels, valid = make_labels(bars["close"], horizon_bars=mp["label"]["horizon_bars"],
+                                threshold_pct=mp["label"]["threshold_pct"])
+    et_dates = np.array(bars.index.tz_convert(ET).date)
+    finite = features.notna().all(axis=1).to_numpy() & np.isfinite(features.to_numpy()).all(axis=1)
+    base_mask = valid.to_numpy() & finite
+    dates = sorted(set(bars.index.tz_convert(ET).date))
+
+    all_oos, fold_rows = [], []
+    start = train_win
+    while start < len(dates):
+        train_dates = set(dates[start - train_win:start])
+        test_dates = set(dates[start:start + test_win])
+        if not test_dates:
+            break
+        m = base_mask & np.isin(et_dates, list(train_dates))
+        X, y = features[m], labels[m]
+        if len(X) < 100 or y.nunique() < 2:
+            start += test_win
+            continue
+        clf = DirectionalClassifier(params=mp["lightgbm"], feature_columns=list(features.columns))
+        clf.train(X, y, valid_fraction=mp["train"]["valid_fraction"],
+                  num_boost_round=mp["train"]["num_boost_round"],
+                  early_stopping_rounds=mp["train"]["early_stopping_rounds"])
+        if quantile is not None:
+            tp = clf.predict_proba(X)
+            cfg.signal._data["ml_threshold_long"] = float(np.quantile(tp, 1 - quantile))
+            cfg.signal.ml_threshold_long = cfg.signal._data["ml_threshold_long"]
+            cfg.signal._data["ml_threshold_short"] = float(np.quantile(tp, quantile))
+            cfg.signal.ml_threshold_short = cfg.signal._data["ml_threshold_short"]
+        probs = clf.predict_proba(features)
+        trades, _ = simulate(cfg, bars, features, probs, poly, include_vix,
+                             allow_dates=test_dates)
+        all_oos.extend(trades)
+        r = summarize(trades)
+        fold_rows.append({"from": min(test_dates), "to": max(test_dates),
+                          "trades": r.total_trades, "win": round(r.win_rate, 2),
+                          "pnl": round(r.total_pnl, 2)})
+        start += test_win
+
+    oos = summarize(all_oos)
+    if verbose:
+        print("\n=== CREDIT-SPREAD walk-forward OUT-OF-SAMPLE (real legs) ===")
+        print(f"{len(dates)} trading days, {len(fold_rows)} folds, width=${cfg.spread.width}, "
+              f"vix={'yes' if include_vix else 'no'}")
+        for f in fold_rows:
+            print(f"  {f['from']}..{f['to']}  trades={f['trades']:2d}  win={f['win']:.0%}  "
+                  f"pnl=${f['pnl']:.2f}")
+        print("-" * 60)
+        print("OOS " + oos.pretty())
+    return {"oos": oos.as_dict(), "folds": fold_rows}
+
+
+def main():
+    p = argparse.ArgumentParser(description="0DTE credit-spread walk-forward")
+    p.add_argument("--days", type=int, default=90)
+    p.add_argument("--train", type=int, default=20)
+    p.add_argument("--test", type=int, default=5)
+    p.add_argument("--quantile", type=float, default=0.15)
+    p.add_argument("--no-breakout", action="store_true")
+    args = p.parse_args()
+    cfg = load_config()
+    if args.no_breakout:
+        cfg.signal._data["require_breakout"] = False
+        cfg.signal.require_breakout = False
+    run(cfg, days=args.days, train_win=args.train, test_win=args.test, quantile=args.quantile)
+
+
+if __name__ == "__main__":
+    main()

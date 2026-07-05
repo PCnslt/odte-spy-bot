@@ -37,6 +37,17 @@ signal:
   use_regime_filter: true
   volatile_regime_min_prob: 0.58   # in 'volatile' regime demand more conviction
 
+# Defined-risk credit spreads (premium SELLING). Bullish signal -> sell a bull PUT spread;
+# bearish -> sell a bear CALL spread. You collect theta instead of paying it.
+spread:
+  width: 5                   # dollars between short and long strike (max loss = width - credit)
+  short_otm_pct: 0.002       # place the short leg this far OTM from spot
+  profit_target_frac: 0.5    # close when you've captured this fraction of the credit
+  stop_mult: 2.0             # stop when the spread costs this multiple of the credit to close
+  min_credit: 0.10           # skip if the net credit is below this (not worth the risk/fees)
+  # Spreads need TIME for theta to work — do not inherit the scalper's 10-min time stop.
+  max_hold_minutes: 240      # hold up to this long (still flattened before the close)
+
 sentiment:
   enabled: false             # requires requirements-extras.txt (transformers+torch)
   model: ProsusAI/finbert

@@ -105,6 +105,22 @@ trade and must be right *and* fast. The only winning fold was a big-move week; t
 really a long-volatility bet that bleeds in calm markets. **Do not trade it.** The walk-forward
 harness exists precisely so any future idea is judged out-of-sample, not curve-fit into a lie.
 
+### Credit spreads (premium selling) — near break-even, costs are the frontier
+
+`python -m src.research.spreads --days 90 --no-breakout --quantile 0.15` sells defined-risk
+verticals (bull put / bear call, real legs from the real chain) instead of buying premium:
+
+| Variant | OOS trades | Win | PF | Expectancy |
+| --- | --- | --- | --- | --- |
+| Long premium | 292 | 33.9% | 0.58 | -$32.95 |
+| Spreads, 10-min stop (wrong exit) | 134 | 40.3% | 0.54 | -$5.26 |
+| Spreads, theta hold (240 min) | 107 | **63.6%** | **0.94** | **-$1.04** |
+
+Selling is confirmed as the right side. The residual loss ≈ transaction costs (4 legs ×
+$0.65 commission + crossing the spread on each leg); gross expectancy before commissions is
+slightly positive. The frontier is **fill quality**, not signal: NBBO-midpoint fills (needs
+Polygon Developer quotes) and real IBKR spread-order paper fills are the next honest tests.
+
 ## Data plan notes (what this Polygon plan actually allows)
 
 - ✅ Historical SPY + option **aggregates** (minute bars) via REST, ~**2 years** back.
