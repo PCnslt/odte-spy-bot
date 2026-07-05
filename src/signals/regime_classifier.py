@@ -14,9 +14,9 @@ from ..common import Regime
 def classify_regime(features_row: pd.Series, vix_high: float = 22.0,
                     atr_high_pct: float = 0.0015, slope_eps: float = 0.0002) -> Regime:
     """Classify a single bar from its feature row."""
-    vix = float(features_row.get("vix", 18.0))
+    vix = float(features_row.get("vix", 0.0)) or 0.0
     atr5 = float(features_row.get("atr_5", 0.0))
-    rv = float(features_row.get("rv_5_proxy", 0.0))
+    rv = float(features_row.get("rv_5", 0.0))
     ema_slope = float(features_row.get("ema_slope", 0.0))
     ema_spread = float(features_row.get("ema_9_21_spread", 0.0))
 

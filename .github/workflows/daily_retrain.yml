@@ -5,14 +5,15 @@ on:
     - cron: "0 21 * * 1-5"   # 21:00 UTC on weekdays (~after US market close)
   workflow_dispatch:
 
-# NOTE: This retrains on whatever data the runner can fetch (free yfinance, ~30 days). It commits
-# an updated model ONLY if it validates better (trainer.py --retrain gate). For real use, point
-# the data layer at a paid feed with proper history.
+# Retrains on REAL Polygon data and commits an updated model ONLY if it validates better
+# (trainer.py --retrain gate). Requires a POLYGON_API_KEY repo secret with an Options plan.
 jobs:
   retrain:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -22,7 +23,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      - name: Download data
+      - name: Download real data
         run: python -m src.data.data_pipeline --download --days 30
       - name: Retrain (only replaces model if better)
         run: python -m src.learning.trainer --retrain --no-download

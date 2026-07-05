@@ -59,6 +59,7 @@ def load_config(config_dir: Path | str = CONFIG_DIR) -> Config:
 
     # Selected secrets surfaced onto the config for convenience.
     merged["secrets"] = {
+        "polygon_api_key": os.getenv("POLYGON_API_KEY", ""),
         "ibkr_account": os.getenv("IBKR_ACCOUNT", ""),
         "telegram_bot_token": os.getenv("TELEGRAM_BOT_TOKEN", ""),
         "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID", ""),

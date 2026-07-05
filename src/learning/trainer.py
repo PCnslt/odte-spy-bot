@@ -21,7 +21,8 @@ def train(cfg, days: int, download: bool = True) -> DirectionalClassifier:
     bars = load_bars(cfg, days, download=download)
     X, y = build_training_set(cfg, bars)
     mp = cfg.model_params
-    clf = DirectionalClassifier(params=mp["lightgbm"])
+    # Feature set is whatever the real data supports (VIX included only if entitled/available).
+    clf = DirectionalClassifier(params=mp["lightgbm"], feature_columns=list(X.columns))
     clf.train(
         X, y,
         valid_fraction=mp["train"]["valid_fraction"],

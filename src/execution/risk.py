@@ -1,16 +1,16 @@
-"""Risk math: volatility-adjusted stop/target on the OPTION premium, and position sizing.
+"""Risk math on the REAL option premium. No Black-Scholes, no delta mapping.
 
-The rule set:
-  * Translate an ATR-based move in the UNDERLYING into an option-premium move via delta.
-  * Add a theta cushion to the stop (0DTE premium bleeds even if the underlying is flat).
+  * Stop distance = clamp(sl_atr_mult * ATR(option's own recent bars),
+                          sl_min_frac * entry, sl_max_frac * entry).
   * Take-profit distance = risk_reward_ratio * stop distance.
-  * Size so that (entry - stop) * 100 * contracts ~= risk_pct * equity, capped by max_contracts.
+  * Size so (entry - stop) * 100 * contracts ~= risk_pct * equity, capped by max_contracts.
+
+Everything here is driven by observed option prices (backtest: real Polygon bars; live: real
+IBKR quotes/bars). Nothing is modeled.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-
-from ..common import MarketSnapshot, OptionRight, Signal
 
 
 @dataclass
@@ -26,21 +26,24 @@ class RiskCalculator:
         self.risk_pct = r["per_trade"]["risk_pct"]
         self.max_contracts = r["per_trade"]["max_contracts"]
         self.min_contracts = r["per_trade"]["min_contracts"]
-        self.rr = r["targets"]["risk_reward_ratio"]
-        self.sl_atr_mult = r["targets"]["sl_atr_mult"]
-        self.theta_buffer_min = r["targets"]["theta_buffer_minutes"]
+        t = r["targets"]
+        self.rr = t["risk_reward_ratio"]
+        self.sl_atr_mult = t["sl_atr_mult"]
+        self.sl_min_frac = t["sl_min_frac"]
+        self.sl_max_frac = t["sl_max_frac"]
 
-    def stop_target(self, entry_premium: float, snapshot: MarketSnapshot) -> StopTarget:
-        # Underlying move at the stop -> premium move via |delta|.
-        underlying_move = self.sl_atr_mult * max(snapshot.atr_5min, 0.01)
-        premium_move = abs(snapshot.delta) * underlying_move
-        theta_cushion = abs(snapshot.theta) * self.theta_buffer_min
-        sl_distance = max(premium_move + theta_cushion, 0.01)
+    def stop_target(self, entry_premium: float, option_atr: float) -> StopTarget:
+        """Compute stop/target from the real entry premium and the option's own ATR."""
+        raw = self.sl_atr_mult * max(option_atr, 0.0)
+        lo = self.sl_min_frac * entry_premium
+        hi = self.sl_max_frac * entry_premium
+        sl_distance = min(max(raw, lo), hi)
+        sl_distance = max(sl_distance, 0.01)
 
         stop_loss = max(entry_premium - sl_distance, 0.01)
         take_profit = entry_premium + sl_distance * self.rr
         risk_per_contract = (entry_premium - stop_loss) * 100
-        return StopTarget(stop_loss, take_profit, risk_per_contract)
+        return StopTarget(round(stop_loss, 2), round(take_profit, 2), risk_per_contract)
 
     def size(self, equity: float, risk_per_contract: float) -> int:
         if risk_per_contract <= 0:

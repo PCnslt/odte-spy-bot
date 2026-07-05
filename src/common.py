@@ -65,10 +65,11 @@ class TradeIntent:
     right: OptionRight
     strike: float
     quantity: int
-    entry_price: float           # option premium (per share)
+    entry_price: float           # real option premium (per share)
     stop_loss: float             # option premium
     take_profit: float           # option premium
     underlying_at_entry: float
+    option_ticker: str = ""      # e.g. O:SPY260702C00580000
     reason: str = ""
 
 

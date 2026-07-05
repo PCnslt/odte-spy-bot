@@ -89,7 +89,7 @@ class IBKRBroker(Broker):
             quantity=intent.quantity, entry_price=intent.entry_price,
             stop_loss=intent.stop_loss, take_profit=intent.take_profit,
             underlying_at_entry=intent.underlying_at_entry,
-            iv_at_entry=getattr(intent, "_iv", 0.20), order_id=oid,
+            iv_at_entry=0.0, order_id=oid,
         ))
         log.info("IBKR bracket sent: %s %s x%d", intent.right.value, intent.strike,
                  intent.quantity)

@@ -1,61 +1,79 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from src.common import MarketSnapshot, OptionRight, Signal
-from src.execution.pricing import atm_strike, black_scholes
 from src.execution.position_manager import PositionManager
-from src.execution.sim_broker import SimBroker
+from src.execution.risk import RiskCalculator
 
 
-def test_black_scholes_call_put_parity_positive():
-    call = black_scholes(500, 500, 60, 0.20, OptionRight.CALL)
-    put = black_scholes(500, 500, 60, 0.20, OptionRight.PUT)
-    assert call.price > 0 and put.price > 0
-    assert 0 <= call.delta <= 1
-    assert -1 <= put.delta <= 0
-    assert call.theta <= 0  # long option bleeds
+def _snap(ts):
+    return MarketSnapshot(timestamp=ts, spy_price=500.0, atr_5min=0.5, rvol=2.0,
+                          vwap=499.0, high_5min=500.0, low_5min=498.0)
 
 
-def test_atm_strike_rounds():
-    assert atm_strike(499.4) == 499
-    assert atm_strike(499.6) == 500
-    assert atm_strike(500, offset=1) == 501
+def test_stop_target_uses_option_premium_and_rr(cfg):
+    calc = RiskCalculator(cfg)
+    st = calc.stop_target(entry_premium=2.00, option_atr=0.40)
+    assert st.stop_loss < 2.00 < st.take_profit
+    # TP distance == rr * SL distance (both measured on the real premium).
+    sl_dist = 2.00 - st.stop_loss
+    tp_dist = st.take_profit - 2.00
+    assert abs(tp_dist - cfg.risk["targets"]["risk_reward_ratio"] * sl_dist) < 1e-6
+    assert st.risk_per_contract > 0
 
 
-def test_sim_broker_take_profit_and_equity(cfg):
-    broker = SimBroker(cfg, starting_equity=10000)
-    now = datetime(2026, 6, 1, 14, 0)
-    snap = MarketSnapshot(timestamp=now, spy_price=500.0, atr_5min=0.5, iv=0.20,
-                          delta=0.5, theta=-0.02)
+def test_stop_target_clamps_to_min_and_max_fraction(cfg):
+    calc = RiskCalculator(cfg)
+    # Tiny ATR -> stop floored at sl_min_frac of premium.
+    st = calc.stop_target(entry_premium=1.00, option_atr=0.0)
+    assert abs((1.00 - st.stop_loss) - cfg.risk["targets"]["sl_min_frac"]) < 1e-6
+    # Huge ATR -> stop capped at sl_max_frac of premium.
+    st2 = calc.stop_target(entry_premium=1.00, option_atr=99.0)
+    assert abs((1.00 - st2.stop_loss) - cfg.risk["targets"]["sl_max_frac"]) < 1e-6
+
+
+def test_sizing_respects_risk_and_caps(cfg):
+    calc = RiskCalculator(cfg)
+    # risk_per_contract tiny -> would size huge, but max_contracts caps it.
+    assert calc.size(equity=100000, risk_per_contract=1.0) == cfg.risk["per_trade"]["max_contracts"]
+    # risk_per_contract larger than budget -> min_contracts floor.
+    assert calc.size(equity=1000, risk_per_contract=10000) == cfg.risk["per_trade"]["min_contracts"]
+
+
+def test_build_intent_from_real_inputs(cfg):
     pm = PositionManager(cfg)
-    intent = pm.build_intent(Signal.BUY_CALL, snap, 10000, minutes_to_close=120)
-    assert intent is not None and intent.quantity >= 1
-    broker.place_bracket(intent)
-    assert len(broker.open_positions()) == 1
+    now = datetime(2026, 6, 1, 14, 0)
+    intent = pm.build_intent(Signal.BUY_CALL, _snap(now), equity=10000,
+                             option_ticker="O:SPY260601C00500000", strike=500.0,
+                             entry_premium=1.50, option_atr=0.30)
+    assert intent is not None
+    assert intent.right == OptionRight.CALL
+    assert intent.quantity >= 1
+    assert intent.stop_loss < intent.entry_price < intent.take_profit
+    assert intent.option_ticker.startswith("O:SPY")
 
-    # Big favorable move should trigger the take-profit and grow equity.
-    results = broker.poll_exits(515.0, now + timedelta(minutes=1))
-    assert results and results[0].exit_reason.value in {"take_profit", "stop_loss", "time_stop"}
+
+def test_build_intent_rejects_penny_premium(cfg):
+    pm = PositionManager(cfg)
+    now = datetime(2026, 6, 1, 14, 0)
+    assert pm.build_intent(Signal.BUY_CALL, _snap(now), 10000,
+                           "O:SPY260601C00500000", 500.0, 0.01, 0.1) is None
 
 
 def test_daily_limits_halt(cfg):
     pm = PositionManager(cfg)
     now = datetime(2026, 6, 1, 14, 0)
-    # Force a daily loss beyond the halt threshold.
     pm.record_result(-cfg.risk["limits"]["max_daily_loss_pct"] * 10000 - 1)
     ok, why = pm.can_open(now, 10000, 0)
     assert not ok and why in {"daily_loss_halt", "halted"}
 
 
-def test_time_stop_closes(cfg):
-    broker = SimBroker(cfg, starting_equity=10000)
-    now = datetime(2026, 6, 1, 14, 0)
-    snap = MarketSnapshot(timestamp=now, spy_price=500.0, atr_5min=0.5, iv=0.20,
-                          delta=0.5, theta=-0.02)
+def test_max_trades_per_day(cfg):
     pm = PositionManager(cfg)
-    intent = pm.build_intent(Signal.BUY_CALL, snap, 10000, minutes_to_close=120)
-    broker.place_bracket(intent)
-    later = now + timedelta(minutes=cfg.risk["limits"]["time_stop_minutes"] + 1)
-    results = broker.poll_exits(500.2, later)
-    assert results and results[0].exit_reason.value == "time_stop"
+    now = datetime(2026, 6, 1, 14, 0)
+    pm.can_open(now, 10000, 0)  # establish the day
+    for _ in range(cfg.risk["limits"]["max_trades_per_day"]):
+        pm.on_open()
+    ok, why = pm.can_open(now, 10000, 0)
+    assert not ok and why == "max_trades_per_day"

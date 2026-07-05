@@ -4,10 +4,17 @@ symbol: SPY
 timezone: America/New_York
 
 data:
-  provider: yfinance        # yfinance | ibkr (live quotes via TWS/Gateway)
-  interval: 1m              # bar size for features
+  # Real data only. Backtests pull real SPY + real 0DTE option bars from Polygon.
+  # The live loop pulls real-time SPY + option quotes from IBKR (TWS/Gateway).
+  historical_provider: polygon   # SPY underlying + option history for backtests
+  live_provider: ibkr            # real-time SPY + option quotes for the live loop
+  interval: 1m
   cache_dir: data
-  vix_symbol: "^VIX"
+  vix_symbol: "I:VIX1D"          # Polygon index ticker for the 1-day VIX (0DTE-relevant)
+  polygon:
+    base_url: "https://api.polygon.io"
+    rate_limit_per_min: 100      # set to your plan's limit; client throttles to stay under it
+    use_quotes: false            # true = fill on real NBBO bid/ask (needs quotes entitlement)
 
 session:
   # Regular trading hours (exchange local time). Bot only trades inside this window.

@@ -9,9 +9,16 @@ per_trade:
   min_contracts: 1
 
 targets:
+  # Stops/targets are computed on the REAL option premium (no Black-Scholes, no delta mapping).
   risk_reward_ratio: 1.5     # TP distance = RR * SL distance
-  sl_atr_mult: 0.75          # SL distance in underlying = mult * ATR(5m), mapped via delta
-  theta_buffer_minutes: 5    # extra SL cushion for expected theta decay
+  sl_atr_mult: 1.0           # SL distance = mult * ATR of the option's own recent bars
+  option_atr_bars: 10        # how many of the option's minute bars to measure ATR over
+  sl_min_frac: 0.20          # floor: stop at least this fraction of entry premium away
+  sl_max_frac: 0.60          # cap: never risk more than this fraction of entry premium
+
+commissions:
+  per_contract: 0.65         # both legs charged; matches typical IBKR options commission
+  slippage_frac: 0.02        # fraction of premium given up per side (crossing the spread)
 
 limits:
   max_trades_per_day: 4
