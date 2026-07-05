@@ -64,10 +64,10 @@ execution:
   poll_seconds: 30           # live loop cadence
   ibkr:
     host: "127.0.0.1"
-    # TWS paper=7497, TWS live=7496, Gateway paper=4002, Gateway live=4001.
-    # The loop picks paper_port for --mode paper and live_port for --mode live.
-    paper_port: 7497
-    live_port: 7496
+    # IB GATEWAY ports (installed on this machine): paper=4002, live=4001.
+    # (TWS would be 7497/7496.) The loop picks paper_port/live_port by --mode.
+    paper_port: 4002
+    live_port: 4001
     client_id: 17
     exchange: SMART
     currency: USD

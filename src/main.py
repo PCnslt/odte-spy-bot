@@ -56,7 +56,14 @@ def selftest(cfg, mode: str = "paper") -> bool:
     feed = IBKRFeed(host=ib.host, port=port, client_id=ib.client_id + 5, symbol=cfg.symbol,
                     exchange=ib.exchange, currency=ib.currency)
     broker = IBKRBroker(cfg, mode=mode)
-    from datetime import datetime as _dt
+    from datetime import datetime as _dt, timedelta as _td
+
+    def _next_expiry():
+        """Today during the week; next Monday on weekends (no SPY options expire Sat/Sun)."""
+        d = _dt.now().date()
+        while d.weekday() >= 5:
+            d += _td(days=1)
+        return d
     ok = True
     try:
         check("feed connects", lambda: (feed.connect(), f"{ib.host}:{port}")[1])
@@ -64,7 +71,7 @@ def selftest(cfg, mode: str = "paper") -> bool:
         check("SPY real-time bars", lambda: f"{len(bars)} bars, last={bars['close'].iloc[-1]:.2f}"
               if not bars.empty else (_ for _ in ()).throw(RuntimeError("no bars")))
         price = float(bars["close"].iloc[-1])
-        opt = feed.resolve_option("C", price, _dt.now().date(), 0)
+        opt = feed.resolve_option("C", price, _next_expiry(), 0)
         check("resolve 0DTE contract", lambda: (f"{opt['label']} premium={opt['entry_price']:.2f} "
               f"atr={opt['atr']:.2f}") if opt else (_ for _ in ()).throw(RuntimeError("none")))
         check("broker connects", lambda: (broker.connect(),
