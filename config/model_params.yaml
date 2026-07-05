@@ -1,8 +1,10 @@
 # LightGBM hyperparameters and training/labeling config.
 
 label:
-  horizon_bars: 5            # look-ahead horizon (bars) for the directional label
-  threshold_pct: 0.0015      # +/-0.15% barrier
+  # Magnitude-aware: a 0DTE long only pays if the underlying MOVES enough to beat theta+spread,
+  # so we label a bigger move over a slightly longer horizon rather than raw next-bar direction.
+  horizon_bars: 10           # look-ahead horizon (bars)
+  threshold_pct: 0.0020      # +/-0.20% barrier (must clear costs to matter)
 
 train:
   lookback_days: 30          # how much history to train on

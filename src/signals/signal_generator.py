@@ -27,6 +27,7 @@ class SignalGenerator:
         self.ml_short = s.get("ml_threshold_short", 0.38)
         self.min_rvol = s.get("min_rvol", 1.3)
         self.vwap_band = s.get("vwap_band_pct", 0.001)
+        self.require_breakout = s.get("require_breakout", True)
         self.use_regime = s.get("use_regime_filter", True)
         self.volatile_min_prob = s.get("volatile_regime_min_prob", 0.68)
         self.bearish_veto = cfg.sentiment.get("bearish_veto", -0.7)
@@ -37,8 +38,10 @@ class SignalGenerator:
             return 0
         above_vwap = s.spy_price > s.vwap * (1 + self.vwap_band)
         below_vwap = s.spy_price < s.vwap * (1 - self.vwap_band)
-        breaks_high = s.spy_price >= s.high_5min
-        breaks_low = s.spy_price <= s.low_5min
+        # Breakout confirmation is optional (research toggle). Without it, the ML probability
+        # carries the timing and the VWAP side carries direction.
+        breaks_high = s.spy_price >= s.high_5min if self.require_breakout else True
+        breaks_low = s.spy_price <= s.low_5min if self.require_breakout else True
         if above_vwap and breaks_high:
             return 1
         if below_vwap and breaks_low:

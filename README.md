@@ -94,10 +94,16 @@ python -m src.data.data_pipeline --download --days 180
 python -m src.research.walkforward --days 180 --train 20 --test 5
 ```
 
-**Honest result as of this build:** on ~5 months of real data the naive rule + LightGBM
-strategy is **negative out-of-sample** (18 trades, 38.9% win, profit factor 0.77, ~-3% total).
-**It has no edge yet.** In-sample it looked break-even; OOS it loses. Do not trade it. The
-walk-forward harness exists precisely so improvements are judged out-of-sample, not curve-fit.
+**Honest result as of this build: the strategy has NO EDGE, and we proved it.**
+
+- Selective variant (breakout required): 18 OOS trades, 38.9% win, PF 0.77, ~-3%.
+- Higher-frequency variant (`--no-breakout --quantile 0.15`, magnitude-aware labels):
+  **292 OOS trades, 33.9% win, PF 0.58, -$9,621 on $10k, Sharpe -4.07, 20 of 21 folds negative.**
+
+Buying 0DTE premium on this signal is a **structural loser** — you pay theta + spread every
+trade and must be right *and* fast. The only winning fold was a big-move week; the strategy is
+really a long-volatility bet that bleeds in calm markets. **Do not trade it.** The walk-forward
+harness exists precisely so any future idea is judged out-of-sample, not curve-fit into a lie.
 
 ## Data plan notes (what this Polygon plan actually allows)
 

@@ -34,6 +34,63 @@ def _parse(s: str) -> time:
     return time(h, m)
 
 
+def selftest(cfg, mode: str = "paper") -> bool:
+    """Validate the live path end-to-end WITHOUT placing an order: connect IBKR data + broker,
+    pull real SPY bars, resolve a real 0DTE contract, read account value. Prints a checklist.
+
+        python -m src.main --selftest        # needs TWS/Gateway (paper) running, API enabled
+    """
+    setup_logging(cfg.logging.get("level", "INFO"), cfg.logging.get("dir", "logs"))
+    ib = cfg.execution.ibkr
+    port = ib.paper_port if mode == "paper" else ib.live_port
+    checks: list[tuple[str, bool, str]] = []
+
+    def check(name, fn):
+        try:
+            detail = fn()
+            checks.append((name, True, detail))
+        except Exception as exc:
+            checks.append((name, False, str(exc)[:160]))
+            raise
+
+    feed = IBKRFeed(host=ib.host, port=port, client_id=ib.client_id + 5, symbol=cfg.symbol,
+                    exchange=ib.exchange, currency=ib.currency)
+    broker = IBKRBroker(cfg, mode=mode)
+    from datetime import datetime as _dt
+    ok = True
+    try:
+        check("feed connects", lambda: (feed.connect(), f"{ib.host}:{port}")[1])
+        bars = feed.latest_bars(lookback_minutes=30)
+        check("SPY real-time bars", lambda: f"{len(bars)} bars, last={bars['close'].iloc[-1]:.2f}"
+              if not bars.empty else (_ for _ in ()).throw(RuntimeError("no bars")))
+        price = float(bars["close"].iloc[-1])
+        opt = feed.resolve_option("C", price, _dt.now().date(), 0)
+        check("resolve 0DTE contract", lambda: (f"{opt['label']} premium={opt['entry_price']:.2f} "
+              f"atr={opt['atr']:.2f}") if opt else (_ for _ in ()).throw(RuntimeError("none")))
+        check("broker connects", lambda: (broker.connect(),
+              f"NetLiq=${broker.account_value():,.0f}")[1])
+    except Exception:
+        ok = False
+    finally:
+        try:
+            feed.disconnect()
+        except Exception:
+            pass
+        try:
+            broker.disconnect()
+        except Exception:
+            pass
+
+    print("\n=== IBKR live-path self-test (%s) ===" % mode)
+    for name, passed, detail in checks:
+        print(f"  [{'PASS' if passed else 'FAIL'}] {name:24s} {detail}")
+    if not any(c[1] for c in checks):
+        print("  (Is TWS/IB Gateway running in %s mode with the API enabled on port %d?)"
+              % (mode, port))
+    print("RESULT:", "PASS — live path is wired." if ok else "FAIL — see above.")
+    return ok
+
+
 def run(cfg, mode: str, once: bool = False) -> None:
     setup_logging(cfg.logging.get("level", "INFO"), cfg.logging.get("dir", "logs"))
     alerter = Alerter.from_config(cfg)
@@ -144,12 +201,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="0DTE SPY bot — live IBKR loop")
     parser.add_argument("--mode", choices=["paper", "live"], default=None)
     parser.add_argument("--once", action="store_true", help="run a single tick and exit")
+    parser.add_argument("--selftest", action="store_true",
+                        help="validate the IBKR live path (no orders placed) and exit")
     args = parser.parse_args()
 
     cfg = load_config()
     mode = args.mode or cfg.execution.get("mode", "paper")
     if mode == "live" and not cfg.execution.get("live_confirmed", False):
         raise SystemExit("Refusing live mode: set execution.live_confirmed: true in config first.")
+    if args.selftest:
+        raise SystemExit(0 if selftest(cfg, mode) else 1)
     run(cfg, mode, once=args.once)
 
 

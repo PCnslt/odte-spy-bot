@@ -34,7 +34,11 @@ def _trading_dates(index) -> list:
 
 
 def run_walkforward(cfg, days: int = 180, train_win: int = 20, test_win: int = 5,
-                    verbose: bool = True) -> dict:
+                    verbose: bool = True, quantile: float | None = None) -> dict:
+    """`quantile` (e.g. 0.15) sets per-fold thresholds adaptively: long when P(up) is in the
+    top `quantile` of the training fold's predictions, short in the bottom `quantile`. This
+    keeps trade frequency stable across folds instead of relying on a fixed 0.55 that a weak
+    model may rarely reach."""
     poly = PolygonOptions.from_config(cfg)
     bars = load_bars(cfg, days, download=False, poly=poly)
     include_vix = has_vix(bars)
@@ -71,6 +75,16 @@ def run_walkforward(cfg, days: int = 180, train_win: int = 20, test_win: int = 5
                   num_boost_round=mp["train"]["num_boost_round"],
                   early_stopping_rounds=mp["train"]["early_stopping_rounds"])
 
+        # Adaptive per-fold thresholds from the training fold's own probability distribution.
+        if quantile is not None:
+            tr_probs = clf.predict_proba(X)
+            long_thr = float(np.quantile(tr_probs, 1 - quantile))
+            short_thr = float(np.quantile(tr_probs, quantile))
+            cfg.signal._data["ml_threshold_long"] = long_thr
+            cfg.signal.ml_threshold_long = long_thr
+            cfg.signal._data["ml_threshold_short"] = short_thr
+            cfg.signal.ml_threshold_short = short_thr
+
         res = run_backtest(cfg, bars=bars, model=clf, poly=poly, allow_dates=test_dates,
                            verbose=False)
         trades = res["trades"]
@@ -104,8 +118,17 @@ def main() -> None:
     p.add_argument("--days", type=int, default=180)
     p.add_argument("--train", type=int, default=20, help="training window in trading days")
     p.add_argument("--test", type=int, default=5, help="test window in trading days")
+    p.add_argument("--quantile", type=float, default=None,
+                   help="adaptive per-fold threshold quantile, e.g. 0.15 (top/bottom 15%%)")
+    p.add_argument("--no-breakout", action="store_true",
+                   help="drop the 5-min breakout requirement (more trades)")
     args = p.parse_args()
-    run_walkforward(load_config(), days=args.days, train_win=args.train, test_win=args.test)
+    cfg = load_config()
+    if args.no_breakout:
+        cfg.signal._data["require_breakout"] = False
+        cfg.signal.require_breakout = False
+    run_walkforward(cfg, days=args.days, train_win=args.train, test_win=args.test,
+                    quantile=args.quantile)
 
 
 if __name__ == "__main__":
