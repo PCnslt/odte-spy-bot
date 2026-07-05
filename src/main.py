@@ -109,7 +109,8 @@ def selftest(cfg, mode: str = "paper") -> bool:
     return ok
 
 
-def run(cfg, mode: str, once: bool = False) -> None:
+def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
+    """`daily=True` exits cleanly after the session close (for schedulers like launchd)."""
     setup_logging(cfg.logging.get("level", "INFO"), cfg.logging.get("dir", "logs"))
     alerter = Alerter.from_config(cfg)
 
@@ -212,6 +213,11 @@ def run(cfg, mode: str, once: bool = False) -> None:
             # 1. Manage open spreads on real leg prices; EOD flatten.
             _manage_spreads(now, force=(t >= flatten_t))
 
+            # Scheduler mode: once the session is over and everything is flat, exit for the day.
+            if daily and t >= close_t and not open_spreads:
+                log.info("Session over (%s); daily mode exiting.", t)
+                break
+
             # 2. New entries inside the session window only.
             if open_t <= t < no_new_t:
                 snap = build_snapshot(cfg, bars, model=model)
@@ -266,6 +272,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="0DTE SPY bot — live IBKR loop")
     parser.add_argument("--mode", choices=["paper", "live"], default=None)
     parser.add_argument("--once", action="store_true", help="run a single tick and exit")
+    parser.add_argument("--daily", action="store_true",
+                        help="exit after the session close (for launchd/cron scheduling)")
     parser.add_argument("--selftest", action="store_true",
                         help="validate the IBKR live path (no orders placed) and exit")
     args = parser.parse_args()
@@ -276,7 +284,7 @@ def main() -> None:
         raise SystemExit("Refusing live mode: set execution.live_confirmed: true in config first.")
     if args.selftest:
         raise SystemExit(0 if selftest(cfg, mode) else 1)
-    run(cfg, mode, once=args.once)
+    run(cfg, mode, once=args.once, daily=args.daily)
 
 
 if __name__ == "__main__":

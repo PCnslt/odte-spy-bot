@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.pcnslt.odte-spy-bot</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>/Users/pcnslt/Library/Mobile Documents/com~apple~CloudDocs/Claude/odte-spy-bot/scripts/run_paper_day.sh</string>
+    </array>
+
+    <!-- 09:25 ET, Monday(1)..Friday(5). The bot itself exits after the close (-–daily). -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>25</integer></dict>
+        <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>25</integer></dict>
+        <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>25</integer></dict>
+        <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>25</integer></dict>
+        <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>25</integer></dict>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>/Users/pcnslt/Library/Mobile Documents/com~apple~CloudDocs/Claude/odte-spy-bot/logs/launchd.out</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/pcnslt/Library/Mobile Documents/com~apple~CloudDocs/Claude/odte-spy-bot/logs/launchd.err</string>
+
+    <key>ProcessType</key>
+    <string>Standard</string>
+</dict>
+</plist>
