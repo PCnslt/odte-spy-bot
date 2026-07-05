@@ -121,6 +121,24 @@ $0.65 commission + crossing the spread on each leg); gross expectancy before com
 slightly positive. The frontier is **fill quality**, not signal: NBBO-midpoint fills (needs
 Polygon Developer quotes) and real IBKR spread-order paper fills are the next honest tests.
 
+### Intelligence layer (range forecasting) — tested, partially adopted
+
+A range-forecasting upgrade (predict the forward 60-min max excursion; place strikes beyond
+it; defend the short strike) was OOS-decomposed before shipping:
+
+| Variant | Trades | Win | PF | $/trade |
+| --- | --- | --- | --- | --- |
+| Baseline | 107 | 63.6% | **0.94** | **-$1.04** |
+| + range strikes | 105 | 62.9% | 0.84 | -$2.17 |
+| + defense exit | 124 | 44.4% | 0.50 | -$10.58 |
+| + both | 106 | 61.3% | 0.77 | -$3.25 |
+
+**Adopted (ON):** liquidity gate on real leg quotes, quote-mid entry pricing, event-day
+guard, nightly range-model training (telemetry on every entry). **Implemented but default
+OFF** (they degraded OOS expectancy): `intelligence.use_range_strikes`,
+`intelligence.defense_enabled`. Full analysis + rejected LLM/transformer proposals:
+[docs/AI_REVIEW.md](docs/AI_REVIEW.md).
+
 ## Data plan notes (what this Polygon plan actually allows)
 
 - ✅ Historical SPY + option **aggregates** (minute bars) via REST, ~**2 years** back.

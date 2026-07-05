@@ -123,6 +123,28 @@ class IBKRFeed:
                 "short_price": prices[0], "long_price": prices[1],
                 "credit": credit, "width": abs(short_strike - long_strike)}
 
+    def leg_quotes(self, spread: dict, timeout_s: float = 4.0) -> Optional[dict]:
+        """REAL bid/ask for both legs via a market-data snapshot (works with delayed data).
+        Returns {short_bid, short_ask, long_bid, long_ask, mid_credit} or None if any side
+        is unavailable — callers decide whether that skips the trade (require_quotes)."""
+        try:
+            tickers = self.ib.reqTickers(spread["short"], spread["long"])
+        except Exception as exc:
+            log.warning("leg_quotes failed: %s", exc)
+            return None
+        if len(tickers) != 2:
+            return None
+        s, l = tickers
+        vals = {"short_bid": s.bid, "short_ask": s.ask,
+                "long_bid": l.bid, "long_ask": l.ask}
+        for k, v in vals.items():
+            if v is None or v != v or v < 0:   # NaN or invalid
+                log.info("leg_quotes: %s unavailable", k)
+                return None
+        mid_credit = ((vals["short_bid"] + vals["short_ask"]) / 2
+                      - (vals["long_bid"] + vals["long_ask"]) / 2)
+        return {**vals, "mid_credit": mid_credit}
+
     def spread_close_cost(self, spread: dict) -> Optional[float]:
         """Current REAL cost to close the spread (buy back short, sell long)."""
         costs = []

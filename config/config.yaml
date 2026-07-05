@@ -56,6 +56,29 @@ sentiment:
 model:
   path: models/lightgbm_directional.txt
   meta_path: models/lightgbm_meta.json
+  range_path: models/lightgbm_range.txt
+  range_meta_path: models/lightgbm_range_meta.json
+
+# Intelligence layer for spread entries/exits. Every feature is fail-safe: missing model,
+# missing quotes, or empty calendar => the previous static behavior.
+#
+# DEFAULTS ARE EVIDENCE-BASED (90-day walk-forward OOS decomposition, 2026-07-05):
+#   baseline PF 0.94 | +range strikes 0.84 | +defense exit 0.50 | both 0.77
+# => use_range_strikes and defense_enabled ship OFF; they degraded expectancy in the test
+# window (smaller credits / whipsaw near static strikes). They remain implemented + tested
+# for event days and high-vol regimes. Liquidity gate, quote-mid pricing, and the event
+# guard are ON: they only avoid costs, never add risk. See docs/AI_REVIEW.md.
+intelligence:
+  use_range_strikes: false     # place short strike beyond forecast range x safety (OOS: hurts in calm regimes)
+  defense_enabled: false       # close when spot nears the short strike (OOS: whipsaws near static strikes)
+  range_horizon_bars: 60       # forecast window for expected max excursion (minutes)
+  range_safety_mult: 1.25      # short strike must sit beyond expected range x this
+  max_short_otm_pct: 0.01      # if the safe strike is further than 1% OTM, skip (no edge)
+  defense_buffer_pct: 0.001    # close defensively when spot gets within 0.1% of the short strike
+  liquidity_max_frac: 0.25     # sum of leg half-spreads must be <= this fraction of credit
+  require_quotes: false        # true = skip entries when leg quotes are unavailable
+  entry_limit_frac: 0.95       # entry limit at this fraction of quote-mid credit (else 0.9 of last)
+  events_file: config/events.yaml
 
 execution:
   broker: sim                # sim | ibkr   (CLI --broker overrides)

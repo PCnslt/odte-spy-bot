@@ -23,12 +23,15 @@ from .data.data_pipeline import build_snapshot
 from .data.ibkr_feed import IBKRFeed
 from .execution.ibkr_broker import IBKRBroker
 from .execution.position_manager import PositionManager
+from .execution.risk import defense_triggered, liquidity_ok
 from .learning.anomaly_detector import AnomalyAction, AnomalyDetector
 from .learning.evaluator import PerformanceMonitor
 from .signals.lightgbm_model import DirectionalClassifier
+from .signals.range_model import RangeForecaster, atr_range_estimate, dynamic_short_otm
 from .signals.signal_generator import SignalGenerator
 from .utils.alerts import Alerter
 from .utils.config import load_config
+from .utils.events import EventGuard
 from .utils.logger import get_logger, setup_logging
 
 log = get_logger("main")
@@ -135,6 +138,17 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
     else:
         log.warning("No model; rules-only. Train: python -m src.learning.trainer --train")
 
+    # Range forecaster: the spread-seller's target. Fail-safe: ATR estimate when absent.
+    range_model = None
+    if RangeForecaster.exists(cfg.model.range_path, cfg.model.range_meta_path):
+        range_model = RangeForecaster.load(cfg.model.range_path, cfg.model.range_meta_path)
+        log.info("Loaded range forecaster.")
+    else:
+        log.warning("No range model; using ATR-based range estimate. Train to enable.")
+
+    intel = cfg.intelligence
+    events = EventGuard(intel.get("events_file", "config/events.yaml"))
+
     open_t, close_t = _parse(cfg.session.market_open), _parse(cfg.session.market_close)
     no_new_t, flatten_t = _parse(cfg.session.no_new_trades_after), _parse(cfg.session.flatten_time)
     poll = cfg.execution.get("poll_seconds", 30)
@@ -157,7 +171,7 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
         alerter.send(f"CLOSE {pos['spread']['kind']} x{pos['quantity']} {reason} "
                      f"credit={tr.credit:.2f} cost={tr.exit_cost:.2f} pnl=${tr.pnl:.2f}")
 
-    def _manage_spreads(now, force: bool = False) -> None:
+    def _manage_spreads(now, spot: float | None = None, force: bool = False) -> None:
         for pos in list(open_spreads):
             filled, credit = broker.spread_fill_status(pos)
             if not filled:
@@ -178,6 +192,14 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                 reason = "flatten"
             elif cost <= tp_cost:
                 reason, cost = "take_profit", tp_cost
+            elif (intel.get("defense_enabled", False) and spot is not None
+                  and defense_triggered(
+                      pos["spread"]["kind"], spot, float(pos["spread"]["short"].strike),
+                      intel.get("defense_buffer_pct", 0.001))):
+                # Underlying is AT the short strike: exit on mechanics, don't wait for the
+                # premium stop. Default OFF — OOS decomposition showed whipsaw losses near
+                # static strikes (PF 0.50); enable only with range-placed strikes.
+                reason = "strike_defense"
             elif cost >= sl_cost:
                 reason, cost = "stop_loss", sl_cost
             elif now - pos["open_time"] >= max_hold:
@@ -210,8 +232,8 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
 
             price = float(bars["close"].iloc[-1])
 
-            # 1. Manage open spreads on real leg prices; EOD flatten.
-            _manage_spreads(now, force=(t >= flatten_t))
+            # 1. Manage open spreads on real leg prices (incl. strike defense); EOD flatten.
+            _manage_spreads(now, spot=price, force=(t >= flatten_t))
 
             # Scheduler mode: once the session is over and everything is flat, exit for the day.
             if daily and t >= close_t and not open_spreads:
@@ -232,28 +254,71 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                     decision = siggen.generate(snap)
                     if decision.signal != Signal.NO_TRADE:
                         ok, why = pm.can_open(now, broker.account_value(), len(open_spreads))
+                        # --- event guard (config/events.yaml) ---
+                        safety = intel.get("range_safety_mult", 1.25)
+                        ev = events.check(now.date()) if ok else None
+                        if ev and ev["action"] == "block":
+                            log.info("Event day (%s): new entries blocked.", ev["name"])
+                            ok = False
+                        elif ev and ev["action"] == "widen":
+                            safety *= 2
+                            log.info("Event day (%s): doubled range safety.", ev["name"])
                         if ok:
                             kind = ("bull_put" if decision.signal == Signal.BUY_CALL
                                     else "bear_call")
-                            spread = feed.resolve_spread(kind, price, now.date(),
-                                                         sp.width, sp.short_otm_pct)
-                            if spread and spread["credit"] >= sp.min_credit:
-                                max_loss = (spread["width"] - spread["credit"]) * 100
-                                qty = max(1, min(max_ct, int(
-                                    (risk_pct * broker.account_value()) // max_loss)))
-                                pos = broker.place_credit_spread(
-                                    spread, qty, min_credit=spread["credit"] * 0.9)
-                                if pos:
-                                    open_spreads.append(pos)
-                                    pm.on_open()
-                                    alerter.send(
-                                        f"OPEN {kind} x{qty} short={spread['short'].strike:g} "
-                                        f"long={spread['long'].strike:g} "
-                                        f"credit~{spread['credit']:.2f} "
-                                        f"(p={decision.ml_prob:.2f})")
-                            elif spread:
-                                log.info("Skipped %s: credit %.2f < min %.2f", kind,
-                                         spread["credit"], sp.min_credit)
+                            # --- expected-range forecast (telemetry always; strike
+                            # placement only when use_range_strikes is enabled) ---
+                            horizon = intel.get("range_horizon_bars", 60)
+                            if range_model is not None:
+                                range_pred = range_model.predict_one(snap.features)
+                            else:
+                                range_pred = atr_range_estimate(snap.atr_5min, price, horizon)
+                            if intel.get("use_range_strikes", False):
+                                otm = dynamic_short_otm(sp.short_otm_pct, range_pred, safety,
+                                                        intel.get("max_short_otm_pct", 0.01))
+                            else:
+                                otm = sp.short_otm_pct
+                            if otm is None:
+                                log.info("Skipped %s: forecast range %.4f needs strike "
+                                         "beyond max OTM cap.", kind, range_pred)
+                            else:
+                                spread = feed.resolve_spread(kind, price, now.date(),
+                                                             sp.width, otm)
+                                if spread:
+                                    # --- real leg quotes: liquidity gate + mid pricing ---
+                                    q = feed.leg_quotes(spread)
+                                    if q is not None:
+                                        spread["credit"] = q["mid_credit"]
+                                        if not liquidity_ok(q["short_bid"], q["short_ask"],
+                                                            q["long_bid"], q["long_ask"],
+                                                            q["mid_credit"],
+                                                            intel.get("liquidity_max_frac", 0.25)):
+                                            log.info("Skipped %s: spread too illiquid for "
+                                                     "credit %.2f", kind, q["mid_credit"])
+                                            spread = None
+                                    elif intel.get("require_quotes", False):
+                                        log.info("Skipped %s: leg quotes unavailable.", kind)
+                                        spread = None
+                                if spread and spread["credit"] >= sp.min_credit:
+                                    max_loss = (spread["width"] - spread["credit"]) * 100
+                                    qty = max(1, min(max_ct, int(
+                                        (risk_pct * broker.account_value()) // max_loss)))
+                                    limit_frac = (intel.get("entry_limit_frac", 0.95)
+                                                  if q is not None else 0.9)
+                                    pos = broker.place_credit_spread(
+                                        spread, qty, min_credit=spread["credit"] * limit_frac)
+                                    if pos:
+                                        open_spreads.append(pos)
+                                        pm.on_open()
+                                        alerter.send(
+                                            f"OPEN {kind} x{qty} "
+                                            f"short={spread['short'].strike:g} "
+                                            f"long={spread['long'].strike:g} "
+                                            f"credit~{spread['credit']:.2f} otm={otm:.3%} "
+                                            f"range={range_pred:.3%} (p={decision.ml_prob:.2f})")
+                                elif spread:
+                                    log.info("Skipped %s: credit %.2f < min %.2f", kind,
+                                             spread["credit"], sp.min_credit)
             if once:
                 break
             _time.sleep(poll)

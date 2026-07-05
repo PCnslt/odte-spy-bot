@@ -1,0 +1,14 @@
+# Economic-event calendar. Maintain manually — FOMC/CPI dates are published a year ahead:
+#   FOMC: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+#   CPI:  https://www.bls.gov/schedule/news_release/cpi.htm
+# action: block  = no new entries that day
+# action: widen  = trade, but demand double the range safety margin
+#
+# Empty list = guard inactive. Example entries (VERIFY dates before relying on them):
+events: []
+#  - date: 2026-07-29
+#    name: FOMC decision
+#    action: block
+#  - date: 2026-07-14
+#    name: CPI release
+#    action: widen

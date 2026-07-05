@@ -111,6 +111,11 @@ Per 30-second poll during 09:30–15:30 ET:
 2. **ML probability**: LightGBM binary classifier → P(SPY up ≥ +0.20% before −0.20%,
    within 10 minutes). Trained nightly on the trailing 30 days; walk-forward validated;
    the retrainer keeps the old model unless the new one scores better on holdout.
+2b. **Range forecaster (the spread-seller's real target)**: LightGBM *regression*
+   predicting the forward 60-minute maximum excursion of SPY (fraction of spot). Drives
+   strike placement and entry skips. Retrained nightly with an only-if-better MAE gate.
+   Fallback when absent: ATR-scaled √time estimate. (Rationale + rejected alternatives:
+   `docs/AI_REVIEW.md` — direction has almost no learnable structure, range does.)
 3. **Regime tag**: VOLATILE / TREND_UP / TREND_DOWN / CHOP from ATR + EMA slope + realized
    vol thresholds (transparent, inspectable).
 4. **Decision** (`SignalGenerator`):
@@ -131,12 +136,20 @@ premium is a structural loser (theta + spread), while selling defined-risk verti
 near break-even *before commissions* — the only variant with a plausible path to positive.
 
 **Construction (all real, resolved live from IBKR):**
-- Bullish signal → **bull put spread**: sell put ~0.2% below spot, buy put $5 lower.
-- Bearish signal → **bear call spread**: sell call ~0.2% above spot, buy call $5 higher.
+- Bullish signal → **bull put spread** (short put below spot, long $5 lower);
+  bearish → **bear call spread** (short call above, long $5 higher).
+- **Strike distance**: static 0.2% OTM by default. Range-forecast placement
+  (`intelligence.use_range_strikes`) is implemented and OOS-tested but ships **OFF** —
+  the 90-day decomposition showed it trims drawdown yet costs expectancy in calm regimes
+  (PF 0.94→0.84). The forecast is still computed and logged on every entry.
+- **Event guard** (`config/events.yaml`): FOMC/CPI days block entries or double the
+  safety margin.
+- **Liquidity gate**: real leg bid/asks fetched; if the legs' half-spreads sum to >25% of
+  the credit, skip — transaction costs would eat the trade.
 - Skip if net credit < $0.10.
-- **Atomic combo (BAG) order** — both legs in one order, no leg risk. Entry is a limit at
-  90% of estimated credit (negative-price combo convention = "fill only if I receive at
-  least this"). Unfilled entries auto-cancel after 3 minutes.
+- **Atomic combo (BAG) order** — both legs in one order, no leg risk. Entry limit at 95%
+  of the quote-mid credit (or 90% of last-price estimate when quotes unavailable).
+  Unfilled entries auto-cancel after 3 minutes.
 
 **Sizing:** risk 2% of account equity against max loss = (width − credit) × 100 per
 contract; hard cap 5 contracts; minimum 1.
@@ -145,6 +158,7 @@ contract; hard cap 5 contracts; minimum 1.
 | Trigger | Rule |
 |---|---|
 | Profit target | Close when buy-back cost ≤ 50% of credit received |
+| Strike defense (**default OFF**) | Close when spot comes within 0.1% of the short strike. OOS decomposition: whipsaws badly near static strikes (PF 0.50) — enable only with range-placed strikes (`intelligence.defense_enabled`) |
 | Stop loss | Close when cost ≥ 2× credit (capped at spread width) |
 | Time stop | Close after 240 minutes (theta needs hours, not 10 minutes) |
 | Session flatten | Everything closed at 15:55 ET, no exceptions |

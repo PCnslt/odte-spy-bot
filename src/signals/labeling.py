@@ -37,3 +37,27 @@ def make_labels(close: pd.Series, horizon_bars: int = 5,
 
     return (pd.Series(labels, index=close.index, name="label"),
             pd.Series(valid, index=close.index, name="valid"))
+
+
+def make_range_labels(high: pd.Series, low: pd.Series, close: pd.Series,
+                      horizon_bars: int = 60) -> tuple[pd.Series, pd.Series]:
+    """Forward MAX EXCURSION labels for range forecasting (the spread-seller's target).
+
+    For each bar t: the largest one-sided move over the next `horizon_bars` bars,
+        range_t = max(max(high[t+1..t+H]) - close_t, close_t - min(low[t+1..t+H])) / close_t
+    A credit-spread seller cares whether price can REACH the short strike — this is that
+    distance, directly. Returns (range_frac, valid_mask) aligned to close.index.
+    """
+    n = len(close)
+    c = close.to_numpy()
+    h = high.to_numpy()
+    l = low.to_numpy()
+    out = np.zeros(n)
+    valid = np.zeros(n, dtype=bool)
+    for i in range(n - horizon_bars):
+        hw = h[i + 1: i + 1 + horizon_bars].max()
+        lw = l[i + 1: i + 1 + horizon_bars].min()
+        out[i] = max(hw - c[i], c[i] - lw) / c[i]
+        valid[i] = True
+    return (pd.Series(out, index=close.index, name="range_frac"),
+            pd.Series(valid, index=close.index, name="valid"))

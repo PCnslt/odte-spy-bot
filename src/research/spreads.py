@@ -25,11 +25,13 @@ from ..data.data_pipeline import has_vix, load_bars
 from ..data.polygon_options import PolygonOptions
 from ..learning.evaluator import summarize
 from ..signals.feature_engineering import build_features
-from ..signals.labeling import make_labels
+from ..signals.labeling import make_labels, make_range_labels
 from ..signals.lightgbm_model import DirectionalClassifier
+from ..signals.range_model import RangeForecaster, dynamic_short_otm
 from ..signals.regime_classifier import classify_regime
 from ..signals.signal_generator import SignalGenerator
 from ..execution.position_manager import PositionManager
+from ..execution.risk import defense_triggered
 from ..utils.config import load_config
 from ..utils.logger import get_logger
 
@@ -65,10 +67,12 @@ def _parse(s: str) -> time:
     return time(h, m)
 
 
-def build_spread(poly: PolygonOptions, expiry, kind: str, spot: float, cfg) -> dict | None:
-    """Resolve real short/long legs from the real listed chain. None if strikes unavailable."""
+def build_spread(poly: PolygonOptions, expiry, kind: str, spot: float, cfg,
+                 otm: float | None = None) -> dict | None:
+    """Resolve real short/long legs from the real listed chain. None if strikes unavailable.
+    `otm` overrides the static short-strike distance (used by the smart/range mode)."""
     width = cfg.spread.width
-    otm = cfg.spread.short_otm_pct
+    otm = cfg.spread.short_otm_pct if otm is None else otm
     chain = poly.list_contracts(expiry)
     if kind == "bull_put":
         side = chain[chain["type"] == "P"].sort_values("strike")
@@ -111,7 +115,12 @@ def _aligned_legs(poly, spread, expiry):
     return df if not df.empty else None
 
 
-def simulate(cfg, bars, features, probs, poly, include_vix, allow_dates=None):
+def simulate(cfg, bars, features, probs, poly, include_vix, allow_dates=None,
+             range_preds=None):
+    """`range_preds`: optional per-bar expected-range forecasts (fraction of spot). When
+    given, short strikes are placed beyond range x safety (skip when > cap) and a
+    strike-defense exit closes the spread if SPY reaches the short strike — mirroring the
+    live loop's intelligence layer."""
     siggen = SignalGenerator(cfg)
     pm = PositionManager(cfg)
     equity = float(cfg.risk["account"]["starting_equity"])
@@ -160,7 +169,15 @@ def simulate(cfg, bars, features, probs, poly, include_vix, allow_dates=None):
 
         kind = "bull_put" if decision.signal == Signal.BUY_CALL else "bear_call"
         expiry = now.date()
-        spread = build_spread(poly, expiry, kind, price, cfg)
+        otm = None
+        if range_preds is not None and cfg.intelligence.get("use_range_strikes", True):
+            otm = dynamic_short_otm(cfg.spread.short_otm_pct, float(range_preds[i]),
+                                    cfg.intelligence.get("range_safety_mult", 1.25),
+                                    cfg.intelligence.get("max_short_otm_pct", 0.01))
+            if otm is None:   # forecast says no safe strike close enough — skip
+                i += 1
+                continue
+        spread = build_spread(poly, expiry, kind, price, cfg, otm=otm)
         if spread is None:
             i += 1
             continue
@@ -194,11 +211,19 @@ def simulate(cfg, bars, features, probs, poly, include_vix, allow_dates=None):
         exit_cost, reason, exit_ts = None, None, entry_bar_ts
         tp_cost = credit * (1 - pt)
         sl_cost = min(credit * stop_mult, spread["width"])
+        spy_close = bars["close"]
+        buffer_pct = cfg.intelligence.get("defense_buffer_pct", 0.001)
         for ots, row in walk.iterrows():
             cost = row["short"] * (1 + slip) - row["long"] * (1 - slip)  # cost to close now
             if cost <= tp_cost:
                 exit_cost, reason, exit_ts = tp_cost, "take_profit", ots
                 break
+            if range_preds is not None and cfg.intelligence.get("defense_enabled", True):
+                spot = float(spy_close.asof(ots))
+                if spot == spot and defense_triggered(kind, spot, spread["short_strike"],
+                                                      buffer_pct):
+                    exit_cost, reason, exit_ts = cost, "strike_defense", ots
+                    break
             if cost >= sl_cost:
                 exit_cost, reason, exit_ts = sl_cost, "stop_loss", ots
                 break
@@ -219,7 +244,9 @@ def simulate(cfg, bars, features, probs, poly, include_vix, allow_dates=None):
     return trades, equity
 
 
-def run(cfg, days=90, train_win=20, test_win=5, quantile=None, verbose=True):
+def run(cfg, days=90, train_win=20, test_win=5, quantile=None, verbose=True, smart=False):
+    """`smart=True` mirrors the live intelligence layer: per-fold range forecaster trained
+    on the fold's train window drives dynamic strike placement + strike-defense exits."""
     poly = PolygonOptions.from_config(cfg)
     bars = load_bars(cfg, days, download=False, poly=poly)
     include_vix = has_vix(bars)
@@ -227,6 +254,9 @@ def run(cfg, days=90, train_win=20, test_win=5, quantile=None, verbose=True):
     mp = cfg.model_params
     labels, valid = make_labels(bars["close"], horizon_bars=mp["label"]["horizon_bars"],
                                 threshold_pct=mp["label"]["threshold_pct"])
+    range_y, range_valid = make_range_labels(
+        bars["high"], bars["low"], bars["close"],
+        horizon_bars=cfg.intelligence.get("range_horizon_bars", 60)) if smart else (None, None)
     et_dates = np.array(bars.index.tz_convert(ET).date)
     finite = features.notna().all(axis=1).to_numpy() & np.isfinite(features.to_numpy()).all(axis=1)
     base_mask = valid.to_numpy() & finite
@@ -255,8 +285,22 @@ def run(cfg, days=90, train_win=20, test_win=5, quantile=None, verbose=True):
             cfg.signal._data["ml_threshold_short"] = float(np.quantile(tp, quantile))
             cfg.signal.ml_threshold_short = cfg.signal._data["ml_threshold_short"]
         probs = clf.predict_proba(features)
+
+        range_preds = None
+        if smart:
+            rm_mask = (range_valid.to_numpy() & finite
+                       & np.isin(et_dates, list(train_dates)))
+            Xr, yr = features[rm_mask], range_y[rm_mask]
+            if len(Xr) >= 100:
+                rf = RangeForecaster(params=mp["lightgbm"],
+                                     feature_columns=list(features.columns))
+                rf.train(Xr, yr, valid_fraction=mp["train"]["valid_fraction"],
+                         num_boost_round=mp["train"]["num_boost_round"],
+                         early_stopping_rounds=mp["train"]["early_stopping_rounds"])
+                range_preds = rf.predict(features)
+
         trades, _ = simulate(cfg, bars, features, probs, poly, include_vix,
-                             allow_dates=test_dates)
+                             allow_dates=test_dates, range_preds=range_preds)
         all_oos.extend(trades)
         r = summarize(trades)
         fold_rows.append({"from": min(test_dates), "to": max(test_dates),
@@ -266,7 +310,8 @@ def run(cfg, days=90, train_win=20, test_win=5, quantile=None, verbose=True):
 
     oos = summarize(all_oos)
     if verbose:
-        print("\n=== CREDIT-SPREAD walk-forward OUT-OF-SAMPLE (real legs) ===")
+        mode = "SMART (range strikes + defense)" if smart else "BASELINE (static strikes)"
+        print(f"\n=== CREDIT-SPREAD walk-forward OUT-OF-SAMPLE — {mode} ===")
         print(f"{len(dates)} trading days, {len(fold_rows)} folds, width=${cfg.spread.width}, "
               f"vix={'yes' if include_vix else 'no'}")
         for f in fold_rows:
@@ -284,12 +329,20 @@ def main():
     p.add_argument("--test", type=int, default=5)
     p.add_argument("--quantile", type=float, default=0.15)
     p.add_argument("--no-breakout", action="store_true")
+    p.add_argument("--smart", action="store_true",
+                   help="use the intelligence layer: range-model strikes + defense exits")
     args = p.parse_args()
     cfg = load_config()
     if args.no_breakout:
         cfg.signal._data["require_breakout"] = False
         cfg.signal.require_breakout = False
-    run(cfg, days=args.days, train_win=args.train, test_win=args.test, quantile=args.quantile)
+    if args.smart:
+        # --smart evaluates the full intelligence layer regardless of live defaults.
+        for k in ("use_range_strikes", "defense_enabled"):
+            cfg.intelligence._data[k] = True
+            setattr(cfg.intelligence, k, True)
+    run(cfg, days=args.days, train_win=args.train, test_win=args.test,
+        quantile=args.quantile, smart=args.smart)
 
 
 if __name__ == "__main__":

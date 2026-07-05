@@ -51,3 +51,31 @@ class RiskCalculator:
         target_risk = self.risk_pct * equity
         contracts = int(target_risk // risk_per_contract)
         return max(self.min_contracts, min(self.max_contracts, contracts))
+
+
+# --- credit-spread decision helpers (pure, unit-tested) ---------------------------
+def defense_triggered(kind: str, spot: float, short_strike: float, buffer_pct: float) -> bool:
+    """True when the underlying threatens the SHORT strike and the spread should be closed
+    defensively, regardless of premium P&L. bull_put: danger is spot falling to the strike;
+    bear_call: danger is spot rising to it. `buffer_pct` fires the exit slightly BEFORE the
+    strike is touched (e.g. 0.001 = 0.1% early)."""
+    if kind == "bull_put":
+        return spot <= short_strike * (1 + buffer_pct)
+    if kind == "bear_call":
+        return spot >= short_strike * (1 - buffer_pct)
+    return False
+
+
+def liquidity_ok(short_bid: float, short_ask: float, long_bid: float, long_ask: float,
+                 credit: float, max_frac: float) -> bool:
+    """True when the cost of crossing both legs' half-spreads is a tolerable fraction of
+    the credit. This is the gate on 'will transaction costs eat this trade'."""
+    if credit <= 0:
+        return False
+    for v in (short_bid, short_ask, long_bid, long_ask):
+        if v is None or not (v == v) or v < 0:   # None/NaN/negative -> can't assess
+            return False
+    half_spreads = ((short_ask - short_bid) + (long_ask - long_bid)) / 2.0
+    if half_spreads < 0:
+        return False
+    return half_spreads <= max_frac * credit
