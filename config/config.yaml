@@ -25,12 +25,16 @@ session:
   flatten_time: "15:55"
 
 signal:
-  ml_threshold_long: 0.62    # prob(up) required to buy calls
-  ml_threshold_short: 0.38   # prob(up) below this to buy puts
-  min_rvol: 1.3              # relative-volume gate
+  # NOTE: calibrate these to your trained model's ACTUAL probability spread. 0DTE 5-min
+  # direction is near-random, so P(up) is compressed near 0.5 (empirically ~0.38-0.60).
+  # A threshold above the model's max => zero trades. Inspect the distribution and retune
+  # every time you retrain (see `trainer` output / the prob stats in the README).
+  ml_threshold_long: 0.55    # prob(up) required to buy calls
+  ml_threshold_short: 0.45   # prob(up) below this to buy puts
+  min_rvol: 1.2              # relative-volume gate
   vwap_band_pct: 0.001       # 0.1% distance from VWAP for the rule trigger
   use_regime_filter: true
-  volatile_regime_min_prob: 0.68   # in 'volatile' regime demand more conviction
+  volatile_regime_min_prob: 0.58   # in 'volatile' regime demand more conviction
 
 sentiment:
   enabled: false             # requires requirements-extras.txt (transformers+torch)

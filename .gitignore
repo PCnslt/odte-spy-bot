@@ -1,12 +1,9 @@
 # Secrets
 .env
 
-# Data / models / logs (regenerated)
-data/*.parquet
-data/*.csv
-models/*.txt
-models/*.pkl
-models/*.json
+# Data / models / logs (regenerated — never commit market data or trained models)
+data/
+models/
 logs/
 *.db
 *.sqlite

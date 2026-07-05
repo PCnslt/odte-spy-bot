@@ -89,7 +89,6 @@ def run_backtest(cfg, days: int = 30, verbose: bool = True,
 
     highs, lows, closes, vols = (bars["high"].to_numpy(), bars["low"].to_numpy(),
                                  bars["close"].to_numpy(), bars["volume"].to_numpy())
-    ts_int = idx_utc.view("int64")
 
     i, n = 0, len(bars)
     contracts_fetched = 0
@@ -180,8 +179,9 @@ def run_backtest(cfg, days: int = 30, verbose: bool = True,
         equity += result.pnl
         pm.record_result(result.pnl)
 
-        # advance past the hold
-        j = int(np.searchsorted(ts_int, exit_ts.value, side="right"))
+        # advance past the hold. Use the index's own (unit-aware) searchsorted — a raw
+        # int64 view breaks when parquet stores the index as microseconds, not nanoseconds.
+        j = int(idx_utc.searchsorted(exit_ts, side="right"))
         i = max(j, i + 1)
 
     report = summarize(monitor.trades)
