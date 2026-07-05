@@ -82,6 +82,57 @@ class IBKRFeed:
         return {"strike": strike, "right": right, "entry_price": last, "atr": atr,
                 "label": label}
 
+    def resolve_spread(self, kind: str, spot: float, expiry: date, width: float,
+                       short_otm_pct: float) -> Optional[dict]:
+        """Resolve a defined-risk vertical from REAL quoted legs.
+
+        kind: 'bull_put' (short put below spot) or 'bear_call' (short call above spot).
+        Returns {kind, short, long, credit, width} where short/long are qualified ib_insync
+        Option contracts and credit is estimated from the legs' latest real prices."""
+        from ib_insync import Option
+
+        right = "P" if kind == "bull_put" else "C"
+        if kind == "bull_put":
+            short_strike = float(int(spot * (1 - short_otm_pct)))
+            long_strike = short_strike - width
+        else:
+            short_strike = float(int(spot * (1 + short_otm_pct)) + 1)
+            long_strike = short_strike + width
+
+        legs = []
+        for strike in (short_strike, long_strike):
+            opt = Option(self.symbol, expiry.strftime("%Y%m%d"), strike, right,
+                         self.exchange, currency=self.currency)
+            try:
+                self.ib.qualifyContracts(opt)
+            except Exception as exc:
+                log.warning("Cannot qualify %s %s %s: %s", right, strike, expiry, exc)
+                return None
+            legs.append(opt)
+
+        prices = []
+        for opt in legs:
+            bars = self._hist(opt, "1 D", "1 min")
+            if bars.empty:
+                log.warning("No bars for leg %s", opt.localSymbol)
+                return None
+            prices.append(float(bars["close"].iloc[-1]))
+
+        credit = prices[0] - prices[1]   # receive short, pay long
+        return {"kind": kind, "short": legs[0], "long": legs[1],
+                "short_price": prices[0], "long_price": prices[1],
+                "credit": credit, "width": abs(short_strike - long_strike)}
+
+    def spread_close_cost(self, spread: dict) -> Optional[float]:
+        """Current REAL cost to close the spread (buy back short, sell long)."""
+        costs = []
+        for opt in (spread["short"], spread["long"]):
+            bars = self._hist(opt, "1 D", "1 min")
+            if bars.empty:
+                return None
+            costs.append(float(bars["close"].iloc[-1]))
+        return costs[0] - costs[1]
+
     # --- helpers ---------------------------------------------------------------
     def _hist(self, contract, duration: str, bar_size: str) -> pd.DataFrame:
         bars = self.ib.reqHistoricalData(

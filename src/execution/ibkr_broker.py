@@ -157,6 +157,60 @@ class IBKRBroker(Broker):
             underlying_at_exit=underlying, commission=0.65 * pos.quantity * 2,
         )
 
+    # --- credit spreads (combo/BAG orders) --------------------------------------
+    def place_credit_spread(self, spread: dict, quantity: int, min_credit: float) -> Optional[dict]:
+        """Open a defined-risk vertical as ONE atomic combo order.
+
+        Legs: SELL the short strike, BUY the long strike. IBKR prices such a package
+        negatively (you receive cash), so the entry limit is -(min_credit): 'fill only
+        if I receive at least min_credit'. Returns a position dict or None if rejected.
+        """
+        from ib_insync import ComboLeg, Contract, LimitOrder
+
+        combo = Contract(symbol=self.cfg.symbol, secType="BAG", exchange=self.exchange,
+                         currency=self.currency)
+        combo.comboLegs = [
+            ComboLeg(conId=spread["short"].conId, ratio=1, action="SELL",
+                     exchange=self.exchange),
+            ComboLeg(conId=spread["long"].conId, ratio=1, action="BUY",
+                     exchange=self.exchange),
+        ]
+        order = LimitOrder("BUY", quantity, round(-abs(min_credit), 2), tif="DAY")
+        trade = self.ib.placeOrder(combo, order)
+        self.ib.sleep(2)
+        status = trade.orderStatus.status
+        errors = [e.message for e in trade.log if e.errorCode not in (0, 399)]
+        if errors:
+            log.error("Spread order rejected: %s", errors)
+            return None
+        log.info("Spread combo sent (%s x%d, min credit %.2f): %s",
+                 spread["kind"], quantity, min_credit, status)
+        return {"combo": combo, "order": order, "trade": trade, "spread": spread,
+                "quantity": quantity, "open_time": datetime.now(),
+                "credit": abs(min_credit)}
+
+    def close_credit_spread(self, pos: dict) -> None:
+        """Unwind the vertical with a market combo order (paper: guaranteed exit)."""
+        from ib_insync import MarketOrder
+
+        # Cancel the entry order if it never filled.
+        if pos["trade"].orderStatus.status in ("PreSubmitted", "Submitted"):
+            filled = pos["trade"].orderStatus.filled or 0
+            self.ib.cancelOrder(pos["order"])
+            if not filled:
+                log.info("Spread entry unfilled; cancelled, nothing to unwind.")
+                return
+        self.ib.placeOrder(pos["combo"], MarketOrder("SELL", pos["quantity"]))
+        log.info("Spread close (market) sent x%d", pos["quantity"])
+
+    def spread_fill_status(self, pos: dict) -> tuple[bool, float]:
+        """(filled?, avg_fill_credit). Combo fill price is negative for a credit."""
+        self.ib.sleep(0)
+        st = pos["trade"].orderStatus
+        filled = st.status == "Filled"
+        credit = abs(st.avgFillPrice) if filled and st.avgFillPrice else pos["credit"]
+        return filled, credit
+
     def disconnect(self) -> None:
         if self.ib is not None:
             self.ib.disconnect()

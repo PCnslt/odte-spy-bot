@@ -3,17 +3,22 @@
     python -m src.main --mode paper    # IBKR paper account (needs TWS/Gateway in paper mode)
     python -m src.main --mode live     # real money — requires execution.live_confirmed: true
 
-Per tick: pull real-time SPY bars from IBKR -> snapshot -> anomaly check -> signal -> resolve
-the REAL 0DTE contract (real premium + ATR from IBKR) -> risk gate -> IBKR bracket order.
-Trades only inside RTH; flattens before the close. No simulated data or prices anywhere.
+STRATEGY: defined-risk 0DTE CREDIT SPREADS (premium selling) — the only variant that survived
+walk-forward research (long premium was decisively negative; see README). Bullish signal ->
+sell a bull put spread; bearish -> sell a bear call spread. Atomic combo orders, sized by max
+loss, managed to profit-target / stop / max-hold / EOD flatten.
+
+Per tick: real SPY bars -> snapshot -> anomaly check -> signal -> resolve REAL spread legs ->
+risk gate -> IBKR combo order -> manage open spread on real leg prices. No simulated data.
 """
 from __future__ import annotations
 
 import argparse
 import time as _time
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 
 from .common import Signal
+from .research.spreads import SpreadTrade
 from .data.data_pipeline import build_snapshot
 from .data.ibkr_feed import IBKRFeed
 from .execution.ibkr_broker import IBKRBroker
@@ -74,6 +79,12 @@ def selftest(cfg, mode: str = "paper") -> bool:
         opt = feed.resolve_option("C", price, _next_expiry(), 0)
         check("resolve 0DTE contract", lambda: (f"{opt['label']} premium={opt['entry_price']:.2f} "
               f"atr={opt['atr']:.2f}") if opt else (_ for _ in ()).throw(RuntimeError("none")))
+        spread = feed.resolve_spread("bull_put", price, _next_expiry(),
+                                     cfg.spread.width, cfg.spread.short_otm_pct)
+        check("resolve credit spread", lambda: (
+            f"{spread['kind']} short={spread['short'].strike:g} long={spread['long'].strike:g} "
+            f"credit~{spread['credit']:.2f}") if spread
+            else (_ for _ in ()).throw(RuntimeError("no spread legs")))
         check("broker connects", lambda: (broker.connect(),
               f"NetLiq=${broker.account_value():,.0f}")[1])
     except Exception:
@@ -126,9 +137,57 @@ def run(cfg, mode: str, once: bool = False) -> None:
     open_t, close_t = _parse(cfg.session.market_open), _parse(cfg.session.market_close)
     no_new_t, flatten_t = _parse(cfg.session.no_new_trades_after), _parse(cfg.session.flatten_time)
     poll = cfg.execution.get("poll_seconds", 30)
-    strike_offset = cfg.execution.option.get("strike_offset", 0)
 
-    alerter.send(f"Bot starting: IBKR {mode} on port {port}")
+    sp = cfg.spread
+    max_hold = timedelta(minutes=sp.get("max_hold_minutes", 240))
+    pt_frac, stop_mult = sp.profit_target_frac, sp.stop_mult
+    commission = cfg.risk["commissions"]["per_contract"]
+    risk_pct = cfg.risk["per_trade"]["risk_pct"]
+    max_ct = cfg.risk["per_trade"]["max_contracts"]
+
+    open_spreads: list[dict] = []
+
+    def _record_close(pos: dict, exit_cost: float, reason: str, now) -> None:
+        tr = SpreadTrade(pos["open_time"], now, pos["spread"]["kind"],
+                         round(pos["credit"], 2), round(max(exit_cost, 0.0), 2),
+                         pos["quantity"], reason, commission=commission * pos["quantity"] * 4)
+        monitor.update(tr)
+        pm.record_result(tr.pnl)
+        alerter.send(f"CLOSE {pos['spread']['kind']} x{pos['quantity']} {reason} "
+                     f"credit={tr.credit:.2f} cost={tr.exit_cost:.2f} pnl=${tr.pnl:.2f}")
+
+    def _manage_spreads(now, force: bool = False) -> None:
+        for pos in list(open_spreads):
+            filled, credit = broker.spread_fill_status(pos)
+            if not filled:
+                # Entry never filled: cancel after 3 minutes (or on force) and forget.
+                if force or now - pos["open_time"] > timedelta(minutes=3):
+                    broker.close_credit_spread(pos)
+                    open_spreads.remove(pos)
+                    log.info("Unfilled spread entry cancelled.")
+                continue
+            pos["credit"] = credit
+            cost = feed.spread_close_cost(pos["spread"])
+            if cost is None:
+                continue
+            tp_cost = credit * (1 - pt_frac)
+            sl_cost = min(credit * stop_mult, pos["spread"]["width"])
+            reason = None
+            if force:
+                reason = "flatten"
+            elif cost <= tp_cost:
+                reason, cost = "take_profit", tp_cost
+            elif cost >= sl_cost:
+                reason, cost = "stop_loss", sl_cost
+            elif now - pos["open_time"] >= max_hold:
+                reason = "time_stop"
+            if reason:
+                broker.close_credit_spread(pos)
+                _record_close(pos, cost, reason, now)
+                open_spreads.remove(pos)
+
+    alerter.send(f"Bot starting: IBKR {mode} on port {port} — CREDIT SPREADS "
+                 f"(width ${sp.width}, PT {pt_frac:.0%}, stop {stop_mult}x)")
     try:
         while True:
             now = datetime.now()
@@ -149,17 +208,11 @@ def run(cfg, mode: str, once: bool = False) -> None:
                 continue
 
             price = float(bars["close"].iloc[-1])
-            for r in broker.poll_exits(price, now):
-                monitor.update(r)
-                pm.record_result(r.pnl)
-                alerter.send(f"Closed {r.right.value}{r.strike:g} {r.exit_reason.value} "
-                             f"pnl=${r.pnl:.2f}")
 
-            if t >= flatten_t:
-                for r in broker.flatten(now):
-                    monitor.update(r)
-                alerter.send("End-of-day flatten.")
+            # 1. Manage open spreads on real leg prices; EOD flatten.
+            _manage_spreads(now, force=(t >= flatten_t))
 
+            # 2. New entries inside the session window only.
             if open_t <= t < no_new_t:
                 snap = build_snapshot(cfg, bars, model=model)
                 vol = float(snap.features.get("rv_annual", 0.0))
@@ -167,35 +220,40 @@ def run(cfg, mode: str, once: bool = False) -> None:
                 anomaly.observe(ret1, vol)
                 a = anomaly.check(ret1, vol)
                 if a.action == AnomalyAction.HALT:
-                    for r in broker.flatten(now):
-                        monitor.update(r)
+                    _manage_spreads(now, force=True)
                     alerter.send(f"ANOMALY {a.kinds}: halted + flattened", level="WARN")
                 elif a.action == AnomalyAction.NONE:
                     decision = siggen.generate(snap)
                     if decision.signal != Signal.NO_TRADE:
-                        ok, why = pm.can_open(now, broker.account_value(),
-                                              len(broker.open_positions()))
+                        ok, why = pm.can_open(now, broker.account_value(), len(open_spreads))
                         if ok:
-                            right = "C" if decision.signal == Signal.BUY_CALL else "P"
-                            opt = feed.resolve_option(right, price, now.date(), strike_offset)
-                            if opt:
-                                entry = round(opt["entry_price"] *
-                                              (1 + cfg.risk["commissions"]["slippage_frac"]), 2)
-                                intent = pm.build_intent(
-                                    decision.signal, snap, broker.account_value(),
-                                    opt["label"], opt["strike"], entry, opt["atr"])
-                                if intent is not None:
-                                    broker.place_bracket(intent)
+                            kind = ("bull_put" if decision.signal == Signal.BUY_CALL
+                                    else "bear_call")
+                            spread = feed.resolve_spread(kind, price, now.date(),
+                                                         sp.width, sp.short_otm_pct)
+                            if spread and spread["credit"] >= sp.min_credit:
+                                max_loss = (spread["width"] - spread["credit"]) * 100
+                                qty = max(1, min(max_ct, int(
+                                    (risk_pct * broker.account_value()) // max_loss)))
+                                pos = broker.place_credit_spread(
+                                    spread, qty, min_credit=spread["credit"] * 0.9)
+                                if pos:
+                                    open_spreads.append(pos)
                                     pm.on_open()
-                                    alerter.send(f"OPEN {right}{opt['strike']:g} "
-                                                 f"x{intent.quantity} @ {intent.entry_price} "
-                                                 f"(p={decision.ml_prob:.2f})")
+                                    alerter.send(
+                                        f"OPEN {kind} x{qty} short={spread['short'].strike:g} "
+                                        f"long={spread['long'].strike:g} "
+                                        f"credit~{spread['credit']:.2f} "
+                                        f"(p={decision.ml_prob:.2f})")
+                            elif spread:
+                                log.info("Skipped %s: credit %.2f < min %.2f", kind,
+                                         spread["credit"], sp.min_credit)
             if once:
                 break
             _time.sleep(poll)
     except KeyboardInterrupt:
         log.info("Interrupted; flattening.")
-        broker.flatten(datetime.now())
+        _manage_spreads(datetime.now(), force=True)
     finally:
         rep = monitor.report()
         alerter.send(f"Session end: {rep.pretty()}")
