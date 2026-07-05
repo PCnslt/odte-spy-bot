@@ -54,16 +54,17 @@ class PolygonOptions:
                 time.sleep(wait)
         self._last_call = time.time()
 
-    def _get(self, url: str, params: Optional[dict] = None) -> list[dict]:
-        """GET with pagination via next_url. Returns the concatenated `results` list."""
-        params = dict(params or {})
-        params["apiKey"] = self.api_key
-        results: list[dict] = []
-        next_url: Optional[str] = url
-        next_params: Optional[dict] = params
-        while next_url:
+    def _request(self, url: str, params: Optional[dict], max_retries: int = 6):
+        """Single GET with 429 backoff (honors Retry-After) and hard-fail on entitlement errors."""
+        for attempt in range(max_retries):
             self._throttle()
-            resp = self._session.get(next_url, params=next_params, timeout=30)
+            resp = self._session.get(url, params=params, timeout=30)
+            if resp.status_code == 429:
+                wait = float(resp.headers.get("Retry-After", 0)) or min(5 * 2 ** attempt, 60)
+                log.warning("Polygon 429 rate-limited; sleeping %.0fs (attempt %d/%d)",
+                            wait, attempt + 1, max_retries)
+                time.sleep(wait)
+                continue
             if resp.status_code in (401, 403):
                 raise PolygonError(
                     f"Polygon {resp.status_code} for {resp.url.split('apiKey')[0]} — your plan "
@@ -72,6 +73,18 @@ class PolygonOptions:
                 )
             if resp.status_code != 200:
                 raise PolygonError(f"Polygon {resp.status_code}: {resp.text[:300]}")
+            return resp
+        raise PolygonError("Polygon 429: exhausted retries. Lower data.polygon.rate_limit_per_min.")
+
+    def _get(self, url: str, params: Optional[dict] = None) -> list[dict]:
+        """GET with pagination via next_url. Returns the concatenated `results` list."""
+        params = dict(params or {})
+        params["apiKey"] = self.api_key
+        results: list[dict] = []
+        next_url: Optional[str] = url
+        next_params: Optional[dict] = params
+        while next_url:
+            resp = self._request(next_url, next_params)
             body = resp.json()
             results.extend(body.get("results", []) or [])
             nxt = body.get("next_url")

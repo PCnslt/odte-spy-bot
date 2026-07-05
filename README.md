@@ -84,6 +84,30 @@ python -m src.backtest --days 30
 python -m src.main --mode paper
 ```
 
+## Research: is there an edge? (walk-forward, out-of-sample)
+
+A single backtest overfits. The real test trains on a trailing window and trades the *next*
+unseen window, rolling forward:
+
+```bash
+python -m src.data.data_pipeline --download --days 180
+python -m src.research.walkforward --days 180 --train 20 --test 5
+```
+
+**Honest result as of this build:** on ~5 months of real data the naive rule + LightGBM
+strategy is **negative out-of-sample** (18 trades, 38.9% win, profit factor 0.77, ~-3% total).
+**It has no edge yet.** In-sample it looked break-even; OOS it loses. Do not trade it. The
+walk-forward harness exists precisely so improvements are judged out-of-sample, not curve-fit.
+
+## Data plan notes (what this Polygon plan actually allows)
+
+- ✅ Historical SPY + option **aggregates** (minute bars) via REST, ~**2 years** back.
+- ❌ **NBBO quotes** (needs Options Developer), ❌ **flat-file downloads** (add-on),
+  ❌ **VIX / indices** (Indices add-on). The code detects these and degrades honestly
+  (drops VIX, uses aggregate fills) rather than faking anything.
+- The plan **rate-limits**; `data.polygon.rate_limit_per_min` throttles the client and it
+  backs off on HTTP 429. All fetched bars are cached under `data/` so re-runs are fast.
+
 ## Live loop & extras
 
 `ib_insync` is required for the live loop; install the extras:

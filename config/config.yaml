@@ -13,7 +13,7 @@ data:
   vix_symbol: "I:VIX1D"          # Polygon index ticker for the 1-day VIX (0DTE-relevant)
   polygon:
     base_url: "https://api.polygon.io"
-    rate_limit_per_min: 100      # set to your plan's limit; client throttles to stay under it
+    rate_limit_per_min: 60       # your plan rate-limits; client self-throttles + backs off on 429
     use_quotes: false            # true = fill on real NBBO bid/ask (needs quotes entitlement)
 
 session:

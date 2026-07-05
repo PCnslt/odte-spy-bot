@@ -54,7 +54,10 @@ def _option_atr(obars: pd.DataFrame, upto_ts, n: int) -> float:
 
 def run_backtest(cfg, days: int = 30, verbose: bool = True,
                  poly: PolygonOptions | None = None,
-                 bars: pd.DataFrame | None = None) -> dict:
+                 bars: pd.DataFrame | None = None,
+                 model=None, allow_dates: set | None = None) -> dict:
+    """`allow_dates` (a set of ET dates) restricts NEW entries to those dates — used by the
+    walk-forward harness to trade only out-of-sample days while keeping full feature warmup."""
     poly = poly or PolygonOptions.from_config(cfg)
     if bars is None:
         bars = load_bars(cfg, days, download=False, poly=poly)
@@ -66,13 +69,15 @@ def run_backtest(cfg, days: int = 30, verbose: bool = True,
     idx_utc = bars.index
     local = idx_utc.tz_convert(ET)
 
-    if DirectionalClassifier.exists(cfg.model.path, cfg.model.meta_path):
+    # Model precedence: injected (walk-forward) > on-disk > rules-only.
+    if model is None and DirectionalClassifier.exists(cfg.model.path, cfg.model.meta_path):
         model = DirectionalClassifier.load(cfg.model.path, cfg.model.meta_path)
-        probs = model.predict_proba(features)
         log.info("Loaded model for backtest.")
+    if model is not None:
+        probs = model.predict_proba(features)
     else:
         probs = np.full(len(features), 0.5)
-        log.warning("No model found; rules-only. Train first for ML signals.")
+        log.warning("No model; rules-only. Train first for ML signals.")
 
     siggen = SignalGenerator(cfg)
     pm = PositionManager(cfg)
@@ -96,6 +101,9 @@ def run_backtest(cfg, days: int = 30, verbose: bool = True,
         now = local[i].to_pydatetime()
         t = now.time()
         if not (open_t <= t < no_new_t):
+            i += 1
+            continue
+        if allow_dates is not None and now.date() not in allow_dates:
             i += 1
             continue
 
@@ -186,7 +194,7 @@ def run_backtest(cfg, days: int = 30, verbose: bool = True,
 
     report = summarize(monitor.trades)
     out = {
-        "report": report.as_dict(), "final_equity": equity,
+        "report": report.as_dict(), "final_equity": equity, "trades": monitor.trades,
         "starting_equity": float(cfg.risk["account"]["starting_equity"]),
         "n_bars": int(n), "contracts_fetched": contracts_fetched,
         "period": f"{bars.index[0]} -> {bars.index[-1]}", "vix": include_vix,
