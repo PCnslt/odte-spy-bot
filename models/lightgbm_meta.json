@@ -1,0 +1,39 @@
+{
+  "feature_columns": [
+    "ret_1",
+    "ret_5",
+    "ret_15",
+    "vwap_dev",
+    "rvol",
+    "vol_z",
+    "atr_5",
+    "atr_15",
+    "rv_5",
+    "rv_annual",
+    "rsi_14",
+    "macd",
+    "macd_signal",
+    "macd_hist",
+    "ema_9_21_spread",
+    "ema_slope",
+    "high_dist_5",
+    "low_dist_5",
+    "minutes_into_session"
+  ],
+  "best_iteration": 14,
+  "params": {
+    "objective": "binary",
+    "metric": "binary_logloss",
+    "boosting_type": "gbdt",
+    "num_leaves": 31,
+    "learning_rate": 0.05,
+    "feature_fraction": 0.8,
+    "bagging_fraction": 0.8,
+    "bagging_freq": 5,
+    "min_data_in_leaf": 50,
+    "lambda_l1": 0.0,
+    "lambda_l2": 0.0,
+    "verbose": -1,
+    "seed": 42
+  }
+}
