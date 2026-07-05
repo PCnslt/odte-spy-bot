@@ -1,0 +1,5 @@
+# Optional — only if you enable sentiment or IBKR (paper/live) trading.
+# Heavy (torch). Install separately: pip install -r requirements-extras.txt
+transformers>=4.40
+torch>=2.2
+ib_insync>=0.9.86        # IBKR execution + market data (needs TWS or IB Gateway running)

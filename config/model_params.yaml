@@ -1,0 +1,26 @@
+# LightGBM hyperparameters and training/labeling config.
+
+label:
+  horizon_bars: 5            # look-ahead horizon (bars) for the directional label
+  threshold_pct: 0.0015      # +/-0.15% barrier
+
+train:
+  lookback_days: 30          # how much history to train on
+  valid_fraction: 0.2        # last fraction used as walk-forward validation
+  num_boost_round: 1000
+  early_stopping_rounds: 50
+
+lightgbm:
+  objective: binary
+  metric: binary_logloss
+  boosting_type: gbdt
+  num_leaves: 31
+  learning_rate: 0.05
+  feature_fraction: 0.8
+  bagging_fraction: 0.8
+  bagging_freq: 5
+  min_data_in_leaf: 50
+  lambda_l1: 0.0
+  lambda_l2: 0.0
+  verbose: -1
+  seed: 42

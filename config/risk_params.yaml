@@ -1,0 +1,26 @@
+# Risk parameters. These are the guardrails. Start conservative; loosen only after evidence.
+
+account:
+  starting_equity: 10000     # used by SimBroker for paper trading
+
+per_trade:
+  risk_pct: 0.02             # fraction of equity risked per trade (max loss to SL)
+  max_contracts: 5           # hard cap regardless of sizing math
+  min_contracts: 1
+
+targets:
+  risk_reward_ratio: 1.5     # TP distance = RR * SL distance
+  sl_atr_mult: 0.75          # SL distance in underlying = mult * ATR(5m), mapped via delta
+  theta_buffer_minutes: 5    # extra SL cushion for expected theta decay
+
+limits:
+  max_trades_per_day: 4
+  max_daily_loss_pct: 0.02   # halt for the day if realized+open PnL <= -2% of equity
+  max_concurrent_positions: 1
+  time_stop_minutes: 10      # force-close any position after this many minutes
+
+anomaly:
+  price_sigma: 3.0           # |z| of 1m return that triggers a price shock
+  iv_spike_mult: 2.0         # IV jump vs rolling mean that triggers an IV shock
+  max_exec_latency_ms: 2000
+  max_data_staleness_s: 120

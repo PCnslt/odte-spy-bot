@@ -1,0 +1,29 @@
+# Secrets
+.env
+
+# Data / models / logs (regenerated)
+data/*.parquet
+data/*.csv
+models/*.txt
+models/*.pkl
+models/*.json
+logs/
+*.db
+*.sqlite
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

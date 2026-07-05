@@ -1,0 +1,66 @@
+# Main configuration. Env vars (.env) override secrets; CLI flags override modes.
+
+symbol: SPY
+timezone: America/New_York
+
+data:
+  provider: yfinance        # yfinance | ibkr (live quotes via TWS/Gateway)
+  interval: 1m              # bar size for features
+  cache_dir: data
+  vix_symbol: "^VIX"
+
+session:
+  # Regular trading hours (exchange local time). Bot only trades inside this window.
+  market_open: "09:30"
+  market_close: "16:00"
+  # Stop opening new trades this many minutes before close; flatten everything at flatten_time.
+  no_new_trades_after: "15:30"
+  flatten_time: "15:55"
+
+signal:
+  ml_threshold_long: 0.62    # prob(up) required to buy calls
+  ml_threshold_short: 0.38   # prob(up) below this to buy puts
+  min_rvol: 1.3              # relative-volume gate
+  vwap_band_pct: 0.001       # 0.1% distance from VWAP for the rule trigger
+  use_regime_filter: true
+  volatile_regime_min_prob: 0.68   # in 'volatile' regime demand more conviction
+
+sentiment:
+  enabled: false             # requires requirements-extras.txt (transformers+torch)
+  model: ProsusAI/finbert
+  bearish_veto: -0.7         # sentiment below this vetoes new longs
+
+model:
+  path: models/lightgbm_directional.txt
+  meta_path: models/lightgbm_meta.json
+
+execution:
+  broker: sim                # sim | ibkr   (CLI --broker overrides)
+  mode: paper                # paper | live (CLI --mode overrides)
+  live_confirmed: false      # MUST be true AND --mode live to send real-money orders
+  poll_seconds: 30           # live loop cadence
+  ibkr:
+    host: "127.0.0.1"
+    # TWS paper=7497, TWS live=7496, Gateway paper=4002, Gateway live=4001.
+    # The loop picks paper_port for --mode paper and live_port for --mode live.
+    paper_port: 7497
+    live_port: 7496
+    client_id: 17
+    exchange: SMART
+    currency: USD
+  option:
+    dte: 0                   # 0DTE
+    strike_offset: 0         # 0 = ATM; +1 = one strike OTM
+    contracts_fallback: 1
+
+memory:
+  db_path: memory.db
+  time_gate_minutes: 3       # min gap between decisions on same symbol
+  max_bias_changes_per_hour: 2
+
+alerts:
+  telegram_enabled: false
+
+logging:
+  level: INFO
+  dir: logs
