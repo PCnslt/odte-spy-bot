@@ -8,7 +8,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/zsh</string>
-        <string>/Users/pcnslt/Library/Mobile Documents/com~apple~CloudDocs/Claude/odte-spy-bot/scripts/run_paper_day.sh</string>
+        <string>/Users/pcnslt/trading/odte-spy-bot/scripts/run_paper_day.sh</string>
     </array>
 
     <!-- 09:25 ET, Monday(1)..Friday(5). The bot itself exits after the close (-–daily). -->
@@ -31,9 +31,9 @@
     </dict>
 
     <key>StandardOutPath</key>
-    <string>/Users/pcnslt/Library/Mobile Documents/com~apple~CloudDocs/Claude/odte-spy-bot/logs/launchd.out</string>
+    <string>/Users/pcnslt/trading/odte-spy-bot/logs/launchd.out</string>
     <key>StandardErrorPath</key>
-    <string>/Users/pcnslt/Library/Mobile Documents/com~apple~CloudDocs/Claude/odte-spy-bot/logs/launchd.err</string>
+    <string>/Users/pcnslt/trading/odte-spy-bot/logs/launchd.err</string>
 
     <key>ProcessType</key>
     <string>Standard</string>
