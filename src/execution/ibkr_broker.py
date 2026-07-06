@@ -177,7 +177,13 @@ class IBKRBroker(Broker):
         ]
         order = LimitOrder("BUY", quantity, round(-abs(min_credit), 2), tif="DAY")
         trade = self.ib.placeOrder(combo, order)
-        self.ib.sleep(2)
+        # Audit M4/m3: bounded event-driven wait (not a blind sleep) — long enough to catch
+        # an immediate rejection, short enough for the 30s loop. Fill tracking afterwards
+        # is the existing per-poll state machine (unfilled entries auto-cancel at 3 min).
+        deadline = 3.0
+        while deadline > 0 and trade.orderStatus.status in ("PendingSubmit", "ApiPending"):
+            self.ib.waitOnUpdate(timeout=0.25)
+            deadline -= 0.25
         status = trade.orderStatus.status
         errors = [e.message for e in trade.log if e.errorCode not in (0, 399)]
         if errors:
@@ -238,6 +244,16 @@ class IBKRBroker(Broker):
         self.ib.sleep(0)
         st = pos["trade"].orderStatus
         filled = st.status == "Filled"
+        if filled and st.avgFillPrice and not pos.get("_fill_logged"):
+            # Audit M4: log the RAW fill price once — the negative-price BAG convention has
+            # never seen a real fill; this is the evidence that verifies the sign logic.
+            log.info("COMBO FILL raw avgFillPrice=%s (expected NEGATIVE for a credit open)",
+                     st.avgFillPrice)
+            if st.avgFillPrice > 0:
+                log.error("SIGN ANOMALY: entry combo filled at POSITIVE price %s — "
+                          "credit accounting may be inverted; review before trusting P&L.",
+                          st.avgFillPrice)
+            pos["_fill_logged"] = True
         credit = abs(st.avgFillPrice) if filled and st.avgFillPrice else pos["credit"]
         return filled, credit
 

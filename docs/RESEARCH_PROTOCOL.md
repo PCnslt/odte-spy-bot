@@ -35,12 +35,17 @@ project before this one. Rules here bind all future research, human- or AI-propo
 - **Data:** TradeLog columns `iv_short`, `rv_60m` (recorded on every entry since 2026-07-05).
 
 ### H2 — $10-width structural change (confirmatory holdout look #1)
-- **Context:** exploratory result on the worn window: PF 1.02, +$0.52/trade (vs 0.94,
-  −$1.04 at $5 width) — the first PF > 1.0 in system history. Exploratory ≠ real.
-- **Hypothesis:** $10-width spreads, otherwise-identical baseline config, achieve **PF >
-  1.05** on the reserved holdout with modeled slippage + commissions.
+- **Context:** exploratory result on the worn window, ORIGINAL harness: PF 1.02 vs 0.94.
+  **Amended 2026-07-05 (before any holdout contact):** the round-5 audit corrected the fill
+  model (pessimistic intrabar stops, 5-min leg-staleness limit, session-bounded labels);
+  corrected exploratory numbers are $10: PF 0.90, −$2.30 vs $5: PF 0.70, −$6.62. The width
+  effect (+0.20 PF) is robust across both fill models; the absolute level dropped.
+- **Hypothesis:** $10-width spreads, baseline config, achieve **PF > 1.00** on the reserved
+  holdout under the CORRECTED (pessimistic-fill) harness.
 - **Test:** one run of `research/spreads.py --width 10` over the holdout dates. ONE look.
-- **Accept:** PF > 1.05. Reject → $10-width is dead historically (live A/B may still speak).
+- **Accept:** PF > 1.00 (break-even under deliberately pessimistic fills = genuine edge
+  under conservative assumptions). Reject → $10-width is dead historically (live A/B may
+  still speak).
 - **Scheduled:** after ≥1 month of live width A/B (so both evidence streams mature together).
 
 ### H2b — live width A/B (running from 2026-07-06)

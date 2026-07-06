@@ -84,6 +84,50 @@ def test_liquidity_ok_gate():
     assert not liquidity_ok(1.00, 1.02, 0.70, 0.72, credit=0.0, max_frac=0.25)
 
 
+# --- session-boundary label masking (audit C1) -------------------------------------
+def _two_day_bars():
+    import pandas as pd
+    idx1 = pd.date_range("2026-06-01 13:30", periods=390, freq="1min", tz="UTC")
+    idx2 = pd.date_range("2026-06-02 13:30", periods=390, freq="1min", tz="UTC")
+    idx = idx1.append(idx2)
+    rng = np.random.default_rng(7)
+    close = 500 * np.cumprod(1 + rng.normal(0, 0.0005, len(idx)))
+    high = close * 1.0004
+    low = close * 0.9996
+    import pandas as pd
+    return pd.DataFrame({"high": high, "low": low, "close": close}, index=idx)
+
+
+def test_labels_never_cross_session_boundary():
+    from src.signals.labeling import make_breach_labels, make_labels, make_range_labels
+    df = _two_day_bars()
+    H = 60
+    _, valid_r = make_range_labels(df["high"], df["low"], df["close"], horizon_bars=H)
+    _, _, valid_b = make_breach_labels(df["high"], df["low"], df["close"], horizon_bars=H)
+    _, valid_d = make_labels(df["close"], horizon_bars=H)
+    for valid in (valid_r, valid_b, valid_d):
+        # Day 1: the last H rows would peek into day 2 -> must be invalid.
+        assert not valid.iloc[390 - H:390].any()
+        # Day 1 interior rows remain valid.
+        assert valid.iloc[:390 - H].all()
+        # Day 2 (final day): last H rows invalid as before (no full window).
+        assert not valid.iloc[-H:].any()
+
+
+# --- cache completeness guard (audit C2) --------------------------------------------
+def test_day_is_complete_and_cache_fresh(tmp_path):
+    from datetime import date, datetime, timedelta
+    from src.data.polygon_options import _cache_fresh, _day_is_complete, _now_et
+    yesterday = (_now_et() - timedelta(days=3)).date()
+    assert _day_is_complete(yesterday)                    # past day: always complete
+    assert _day_is_complete(date(2026, 7, 4))             # Saturday: no session
+    # A file written NOW for a range ending 3 days ago is fresh (post-close write).
+    f = tmp_path / "x.parquet"
+    f.write_text("stub")
+    assert _cache_fresh(f, yesterday)
+    assert not _cache_fresh(tmp_path / "missing.parquet", yesterday)
+
+
 # --- breach labels + EV gate ------------------------------------------------------
 def test_breach_labels_directional(synthetic_bars):
     dn, up, valid = make_breach_labels(synthetic_bars["high"], synthetic_bars["low"],

@@ -17,7 +17,7 @@ from ..signals.feature_engineering import build_features
 from ..signals.labeling import make_labels
 from ..signals.regime_classifier import classify_regime
 from ..utils.logger import get_logger
-from .polygon_options import PolygonError, PolygonOptions
+from .polygon_options import PolygonError, PolygonOptions, _cache_fresh, _day_is_complete
 
 log = get_logger("data_pipeline")
 
@@ -39,7 +39,9 @@ def load_bars(cfg, days: int, download: bool = False,
     start, end = _date_range(days)
 
     cache = poly.cache_dir / f"spy_1m_{start:%Y%m%d}_{end:%Y%m%d}.parquet"
-    if not download and cache.exists():
+    # Same-day partial-session guard (audit C2): only serve/write caches whose final day
+    # was complete at write time.
+    if not download and cache.exists() and _cache_fresh(cache, end):
         return pd.read_parquet(cache)
 
     spy = poly.stock_history(start, end, symbol=cfg.symbol)
@@ -57,7 +59,8 @@ def load_bars(cfg, days: int, download: bool = False,
         except PolygonError as exc:
             log.warning("VIX unavailable (%s). Proceeding without VIX features. %s",
                         vix_symbol, exc)
-    spy.to_parquet(cache)
+    if _day_is_complete(end):
+        spy.to_parquet(cache)
     return spy
 
 

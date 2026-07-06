@@ -20,7 +20,19 @@ if [ "$dow" -ge 6 ]; then
 fi
 
 # Pull the latest code + nightly-retrained model (fast-forward only; never break local state).
+PRE_PULL=$(git rev-parse HEAD)
 git pull --ff-only origin main || echo "WARN: git pull failed; running with local version."
+
+# Audit M3: never trade freshly pulled code that fails its own tests — revert and run the
+# last-known-good commit instead (fail closed, but still trade the proven version).
+if [ "$(git rev-parse HEAD)" != "$PRE_PULL" ]; then
+  if ! "$REPO/venv/bin/python" -m pytest -q >/dev/null 2>&1; then
+    echo "ERROR: tests FAILED on pulled code — reverting to pre-pull commit $PRE_PULL."
+    git reset --hard "$PRE_PULL"
+  else
+    echo "Pulled $(git rev-parse --short HEAD); tests pass."
+  fi
+fi
 
 # Sanity 1: is IB Gateway's paper API port up at all?
 if ! nc -z 127.0.0.1 4002 2>/dev/null; then

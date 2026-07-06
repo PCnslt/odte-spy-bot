@@ -169,7 +169,15 @@ class IBKRFeed:
         return {**vals, "mid_credit": mid_credit}
 
     def spread_close_cost(self, spread: dict) -> Optional[float]:
-        """Current REAL cost to close the spread (buy back short, sell long)."""
+        """Current REAL cost to close the spread (buy back short, sell long).
+
+        Audit M2: quotes first — in a fast market the last PRINT lags the market and a
+        stop checked against it fires late. Fall back to last-traded bars only when
+        quotes are unavailable (e.g. no entitlement)."""
+        q = self.leg_quotes(spread)
+        if q is not None:
+            return float(q["short_ask"] + q["short_bid"]) / 2 - \
+                   float(q["long_ask"] + q["long_bid"]) / 2
         costs = []
         for opt in (spread["short"], spread["long"]):
             bars = self._hist(opt, "1 D", "1 min")

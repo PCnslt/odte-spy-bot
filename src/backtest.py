@@ -1,4 +1,10 @@
-"""Event-driven backtester on REAL data.
+"""DEPRECATED (audit O4) — legacy SINGLE-LEG (long premium) backtester.
+
+The deployed strategy is credit spreads; all current research runs through
+src/research/spreads.py. Retained for the historical long-premium record and
+research/walkforward.py. Do not use it to evaluate the live strategy.
+
+Event-driven backtester on REAL data.
 
 Underlying: real SPY minute bars (Polygon). Options: real 0DTE contract minute bars (Polygon).
 When a signal fires, we resolve the actual listed ATM contract for that day, enter at its real

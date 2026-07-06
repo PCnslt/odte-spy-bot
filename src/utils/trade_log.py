@@ -51,7 +51,10 @@ CREATE TABLE IF NOT EXISTS trades (
 
 class TradeLog:
     # Columns added after the original schema: migrated in-place (SQLite ADD COLUMN).
-    _MIGRATIONS = ["rv_60m REAL"]
+    _MIGRATIONS = ["rv_60m REAL",
+                   # audit m1: the OTHER width arm's credit estimate at the same entry —
+                   # lets H2b condition on "both arms would have passed min_credit".
+                   "alt_width_credit_est REAL"]
 
     def __init__(self, db_path: str | Path = "trades.db"):
         self._conn = sqlite3.connect(str(db_path))
@@ -66,9 +69,9 @@ class TradeLog:
 
     def open_trade(self, **kw) -> int:
         cols = ["opened_at", "kind", "short_strike", "long_strike", "width", "quantity",
-                "credit_est", "spot", "regime", "ml_prob", "range_pred",
-                "p_breach_dn", "p_breach_up", "iv_short", "rv_annual", "rv_60m", "rvol",
-                "atr_5", "minutes_into_session"]
+                "credit_est", "alt_width_credit_est", "spot", "regime", "ml_prob",
+                "range_pred", "p_breach_dn", "p_breach_up", "iv_short", "rv_annual",
+                "rv_60m", "rvol", "atr_5", "minutes_into_session"]
         vals = [kw.get(c) for c in cols]
         cur = self._conn.execute(
             f"INSERT INTO trades ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",

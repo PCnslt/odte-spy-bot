@@ -54,3 +54,41 @@ class EventGuard:
     def check(self, d: date) -> Optional[dict]:
         """Return {'name','action'} if `d` is an event day, else None."""
         return self._events.get(d)
+
+    def validate(self) -> list[str]:
+        """Lint the calendar (audit m5): parse errors, invalid actions, stale dates."""
+        problems: list[str] = []
+        if self.path.exists() and not self._events:
+            try:
+                raw = yaml.safe_load(self.path.read_text()) or {}
+                if raw.get("events"):
+                    problems.append("events present but none parsed — check date/format")
+            except Exception as exc:
+                problems.append(f"YAML parse error: {exc}")
+        today = date.today()
+        for d, ev in sorted(self._events.items()):
+            if ev["action"] not in ("block", "widen"):
+                problems.append(f"{d} {ev['name']}: invalid action '{ev['action']}'")
+            if d < today:
+                problems.append(f"{d} {ev['name']}: date is in the past (stale entry)")
+        return problems
+
+
+def _main() -> None:  # python -m src.utils.events --validate
+    import argparse
+
+    p = argparse.ArgumentParser(description="Event-calendar lint")
+    p.add_argument("--path", default="config/events.yaml")
+    p.add_argument("--validate", action="store_true")
+    args = p.parse_args()
+    g = EventGuard(args.path)
+    problems = g.validate()
+    if problems:
+        for x in problems:
+            print(f"PROBLEM: {x}")
+        raise SystemExit(1)
+    print(f"events.yaml OK ({len(g._events)} events)")
+
+
+if __name__ == "__main__":
+    _main()

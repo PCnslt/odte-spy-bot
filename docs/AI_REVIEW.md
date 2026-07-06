@@ -167,6 +167,58 @@ structure-over-signal. Dispositions:
 Round-4 lesson: adversarial review works in both directions — the external model improved
 after being confronted with its record, and its structural instinct produced the first
 PF>1.0 exploratory result. The protocol now exists to keep that result honest.
+*(Round-5 postscript: the corrected fill model revised that PF>1.0 down — see below.)*
+
+---
+
+# Round 5 — full code audit: findings, fixes, and the corrected evidence (2026-07-05)
+
+DeepSeek audited the complete codebase (46 files). All 7 of our self-flagged suspects were
+confirmed; its independent additions were mostly good. Dispositions:
+
+| Finding | Verdict | Action |
+|---|---|---|
+| C1 session-boundary label leakage | **Confirmed — and extended**: `make_labels` (directional) had the identical bug DeepSeek missed | `_same_session_mask` in all THREE label functions (ET-date bounded windows) |
+| C2 same-day cache poisoning | Confirmed | Completeness guards: never serve/write caches for an unfinished session (`_day_is_complete`, `_cache_fresh`, incl. `load_bars`) |
+| M1 stale long-leg ffill | Confirmed | `merge_asof` with hard 5-min staleness tolerance; unpriceable rows dropped |
+| M2 exits on last-trade prints | Confirmed | Backtest: stops trigger on PESSIMISTIC intrabar cost (short-high/long-low), fill at worst(stop, bar); TP stays on closes. Live: `spread_close_cost` is quotes-first, bars fallback |
+| M3 ungated git pull | Confirmed | pytest gate after pull; revert to pre-pull commit on failure |
+| M4 combo sign logic + sleep(2) | **Partially rebutted**: the claimed "PM thinks it's open, broker has nothing" cannot happen — the unfilled-entry state machine cancels at 3 min | Kept the polish: bounded `waitOnUpdate` loop, raw-fill-price logging + sign-anomaly alarm on first real fills |
+| m1 width-A/B min-credit bias | Confirmed | Counterfactual logging: the OTHER arm's credit resolved & recorded per entry (`alt_width_credit_est`) |
+| m2 timezone assumption | Accepted as risk | Fail-closed startup check: refuse to run if host clock ≠ ET (override env var) |
+| m3 sleep(2) race | Merged into M4 | — |
+| m4 fake-VIX "attack" | **Rejected** — a user faking their own data hurts only themselves | Doc note only |
+| m5 events calendar fragility | Accepted | `python -m src.utils.events --validate` CLI (stale/invalid entries) |
+| m6 real-data integration test in CI | **Rejected** — network in CI = flaky CI | Optional local run documented |
+| O1 doc says quotes, code used bars | Confirmed | Fixed the CODE (quotes-first exits), doc now true |
+| O2 SelfCorrector dead code | Confirmed | **Removed** (module + test); consecutive-loss brake + nightly retrain cover it |
+| O3 range model trained but unused | Working as intended | Telemetry + `--smart` research arm; documented |
+| O4 two backtesters | Confirmed | `backtest.py` marked DEPRECATED (kept for the long-premium record + walkforward) |
+
+## The corrected evidence — old numbers were optimistic
+
+C1+M1+M2 change labels AND fills, so all OOS results were re-run on the corrected harness
+(same 90-day window; models retrained on session-bounded labels):
+
+| Variant | Old harness | **Corrected harness** |
+|---|---|---|
+| $5 baseline | 107 tr, 63.6%, PF 0.94, −$1.04 | **126 tr, 60.3%, PF 0.70, −$6.62** |
+| $10 width | 106 tr, 65.1%, PF 1.02, +$0.52 | **122 tr, 66.4%, PF 0.90, −$2.30** |
+
+**What changed and why:** stops now fill at the bar's worst price instead of politely at the
+stop level, and stale-leg mispricing no longer smooths exits. The old harness flattered
+fills; the "first PF > 1.0" headline is **retracted**.
+
+**What survived:** the STRUCTURAL effect. $10 width beats $5 by +0.20 PF / +$4.32 per trade
+under the harsher model (it was only +0.08 / +$1.56 under the old one) — wider spreads are
+robustly better *relative*, in both fill regimes. And reality likely sits BETWEEN the two
+harnesses: the corrected one is deliberately pessimistic (worst-intrabar stop fills PLUS
+flat slippage on top). The TradeLog's est-vs-fill columns exist precisely to locate where
+real fills fall; the live width A/B continues unchanged.
+
+**Protocol amendment (made before any holdout contact):** H2's confirmatory test runs on
+the corrected harness with acceptance **PF > 1.00** (break-even under pessimistic fills =
+genuine edge under conservative assumptions). Recorded in RESEARCH_PROTOCOL.md.
 
 ## Risk assessment of the adopted design (no bullshit)
 

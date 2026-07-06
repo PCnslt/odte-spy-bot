@@ -105,13 +105,25 @@ def build_spread(poly: PolygonOptions, expiry, kind: str, spot: float, cfg,
             "width": abs(float(short["strike"]) - float(long["strike"]))}
 
 
-def _aligned_legs(poly, spread, expiry):
+def _aligned_legs(poly, spread, expiry, max_staleness="5min"):
+    """Align both legs' REAL bars onto the short leg's timestamps.
+
+    Audit M1: unlimited forward-fill let a long leg that hadn't traded for an hour price
+    the spread with a stale print. merge_asof with a hard staleness tolerance drops any
+    row where the long leg has no trade within `max_staleness` — those moments are
+    unpriceable, not 'free to assume unchanged'. Carries high/low for both legs so stops
+    can be checked pessimistically (audit M2)."""
     sb = poly.option_bars(spread["short_ticker"], expiry)
     lb = poly.option_bars(spread["long_ticker"], expiry)
     if sb.empty or lb.empty:
         return None
-    long_close = lb["close"].reindex(sb.index, method="ffill")
-    df = pd.DataFrame({"short": sb["close"], "long": long_close}).dropna()
+    s = sb[["close", "high", "low"]].rename(
+        columns={"close": "s_close", "high": "s_high", "low": "s_low"})
+    l = lb[["close", "high", "low"]].rename(
+        columns={"close": "l_close", "high": "l_high", "low": "l_low"})
+    df = pd.merge_asof(s.sort_index(), l.sort_index(), left_index=True, right_index=True,
+                       direction="backward", tolerance=pd.Timedelta(max_staleness))
+    df = df.dropna()
     return df if not df.empty else None
 
 
@@ -193,7 +205,7 @@ def simulate(cfg, bars, features, probs, poly, include_vix, allow_dates=None,
             i += 1
             continue
         e = fwd.iloc[0]
-        credit = e["short"] * (1 - slip) - e["long"] * (1 + slip)   # net premium received
+        credit = e["s_close"] * (1 - slip) - e["l_close"] * (1 + slip)  # net premium received
         if credit < min_credit:
             i += 1
             continue
@@ -221,7 +233,11 @@ def simulate(cfg, bars, features, probs, poly, include_vix, allow_dates=None,
         spy_close = bars["close"]
         buffer_pct = cfg.intelligence.get("defense_buffer_pct", 0.001)
         for ots, row in walk.iterrows():
-            cost = row["short"] * (1 + slip) - row["long"] * (1 - slip)  # cost to close now
+            # Audit M2: stops trigger on the PESSIMISTIC intrabar cost (short at its high,
+            # long at its low) — the worst price the bar could have handed us. Profit
+            # targets stay on closes (never award an optimistic intrabar touch).
+            cost = row["s_close"] * (1 + slip) - row["l_close"] * (1 - slip)
+            cost_worst = row["s_high"] * (1 + slip) - row["l_low"] * (1 - slip)
             if cost <= tp_cost:
                 exit_cost, reason, exit_ts = tp_cost, "take_profit", ots
                 break
@@ -231,12 +247,15 @@ def simulate(cfg, bars, features, probs, poly, include_vix, allow_dates=None,
                                                       buffer_pct):
                     exit_cost, reason, exit_ts = cost, "strike_defense", ots
                     break
-            if cost >= sl_cost:
-                exit_cost, reason, exit_ts = sl_cost, "stop_loss", ots
+            if cost_worst >= sl_cost:
+                # Filled at the stop level or the bar's worst, whichever is uglier — a
+                # stop in a gapping bar does not fill politely at the stop price.
+                exit_cost = min(max(sl_cost, cost), spread["width"])
+                reason, exit_ts = "stop_loss", ots
                 break
         if exit_cost is None:
             last = legs.loc[legs.index <= deadline].iloc[-1]
-            exit_cost = max(last["short"] * (1 + slip) - last["long"] * (1 - slip), 0.0)
+            exit_cost = max(last["s_close"] * (1 + slip) - last["l_close"] * (1 - slip), 0.0)
             reason = "flatten" if deadline == day_flat else "time_stop"
             exit_ts = legs.loc[legs.index <= deadline].index[-1]
 

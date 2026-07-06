@@ -16,6 +16,7 @@ import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
@@ -23,6 +24,35 @@ import requests
 from ..utils.logger import get_logger
 
 log = get_logger("polygon")
+
+_ET = ZoneInfo("America/New_York")
+
+
+def _now_et() -> datetime:
+    return datetime.now(_ET)
+
+
+def _day_is_complete(day: date) -> bool:
+    """True when `day`'s session data can no longer change (past date, weekend, or today
+    after 16:15 ET). Guards the cache against poisoning by partial same-day fetches
+    (audit C2): an intraday fetch cached as 'the full day' would corrupt every later
+    retrain silently."""
+    now = _now_et()
+    if day < now.date() or day.weekday() >= 5:  # past, or Sat/Sun (no session to corrupt)
+        return True
+    return day == now.date() and (now.hour, now.minute) >= (16, 15)
+
+
+def _cache_fresh(path: Path, day: date) -> bool:
+    """A cached file whose range ends on `day` is only trustworthy if it was WRITTEN after
+    that day's close — otherwise it may hold a partial session from an intraday run."""
+    if not path.exists():
+        return False
+    if day.weekday() >= 5:  # weekend end-date: nothing was trading; any write is complete
+        return True
+    mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=_ET)
+    close = datetime(day.year, day.month, day.day, 16, 15, tzinfo=_ET)
+    return mtime >= close
 
 
 class PolygonError(RuntimeError):
@@ -148,21 +178,29 @@ class PolygonOptions:
         return out[keep]
 
     def option_bars(self, ticker: str, day: date) -> pd.DataFrame:
-        """Real minute bars for a single option contract on `day` (cached)."""
+        """Real minute bars for a single option contract on `day`. Cached ONLY once the
+        session is complete; a same-day intraday request is served fresh and never cached
+        (audit C2: partial-day cache poisoning)."""
         cache = self.cache_dir / "options" / f"{ticker.replace(':', '_')}_{day:%Y%m%d}.parquet"
-        if cache.exists():
+        if cache.exists() and _cache_fresh(cache, day):
             return pd.read_parquet(cache)
         df = self._aggs(ticker, f"{day:%Y-%m-%d}", f"{day:%Y-%m-%d}")
-        df.to_parquet(cache)
+        if _day_is_complete(day):
+            df.to_parquet(cache)
+        else:
+            log.info("option_bars(%s, %s): session incomplete — served fresh, not cached.",
+                     ticker, day)
         return df
 
     def stock_history(self, start: date, end: date, symbol: str = "SPY") -> pd.DataFrame:
-        """Real SPY minute bars over [start, end] (cached per range)."""
+        """Real SPY minute bars over [start, end]. Same completeness guard as option_bars:
+        a range that includes an unfinished session is never cached."""
         cache = self.cache_dir / f"{symbol.lower()}_1m_{start:%Y%m%d}_{end:%Y%m%d}.parquet"
-        if cache.exists():
+        if cache.exists() and _cache_fresh(cache, end):
             return pd.read_parquet(cache)
         df = self._aggs(symbol, f"{start:%Y-%m-%d}", f"{end:%Y-%m-%d}")
-        df.to_parquet(cache)
+        if _day_is_complete(end):
+            df.to_parquet(cache)
         return df
 
     def current_iv(self, option_ticker: str, underlying: str = "SPY") -> Optional[float]:

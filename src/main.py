@@ -139,8 +139,27 @@ def selftest(cfg, mode: str = "paper") -> bool:
     return ok
 
 
+def _assert_eastern_host() -> None:
+    """Audit m2: all session logic uses naive datetime.now() and ASSUMES the host clock is
+    America/New_York. Refuse to trade on a mis-zoned host (fail closed) rather than trade
+    the wrong hours. Override with ODTE_TZ_OVERRIDE=1 only if you know what you're doing."""
+    import os
+    from zoneinfo import ZoneInfo
+
+    if os.getenv("ODTE_TZ_OVERRIDE") == "1":
+        return
+    now = datetime.now()
+    et = datetime.now(ZoneInfo("America/New_York")).replace(tzinfo=None)
+    if abs((now - et).total_seconds()) > 120:
+        raise SystemExit(
+            f"Host clock is not America/New_York (local {now:%H:%M} vs ET {et:%H:%M}). "
+            "Session logic would trade the wrong hours. Set the OS timezone to ET or "
+            "export ODTE_TZ_OVERRIDE=1 to bypass.")
+
+
 def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
     """`daily=True` exits cleanly after the session close (for schedulers like launchd)."""
+    _assert_eastern_host()
     setup_logging(cfg.logging.get("level", "INFO"), cfg.logging.get("dir", "logs"))
     alerter = Alerter.from_config(cfg)
 
@@ -430,6 +449,18 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                                     if pos:
                                         open_spreads.append(pos)
                                         pm.on_open()
+                                        # Audit m1: log the counterfactual — what would the
+                                        # OTHER width arm's credit have been right now?
+                                        alt_credit = None
+                                        if intel.get("width_experiment_enabled", False):
+                                            arms = [float(a) for a in
+                                                    intel.get("width_arms", [])]
+                                            others = [a for a in arms if a != width]
+                                            if others:
+                                                alt = feed.resolve_spread(
+                                                    kind, price, now.date(), others[0], otm)
+                                                if alt:
+                                                    alt_credit = alt["credit"]
                                         # --- TradeLog: full decision context (the training
                                         # data every deferred idea is waiting for) ---
                                         try:
@@ -454,7 +485,9 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                                                 short_strike=float(spread["short"].strike),
                                                 long_strike=float(spread["long"].strike),
                                                 width=spread["width"], quantity=qty,
-                                                credit_est=spread["credit"], spot=price,
+                                                credit_est=spread["credit"],
+                                                alt_width_credit_est=alt_credit,
+                                                spot=price,
                                                 regime=snap.regime.value,
                                                 ml_prob=decision.ml_prob,
                                                 range_pred=range_pred,

@@ -90,7 +90,8 @@ src/
 │   ├── trainer.py           Train/retrain CLI; retrain replaces model only if better
 │   ├── evaluator.py         Win rate, PF, Sharpe, maxDD, expectancy; retrain trigger
 │   ├── anomaly_detector.py  Price-shock/staleness/latency → REDUCE_RISK or HALT
-│   └── self_corrector.py    Bounded, audited parameter nudges (governor, not optimizer)
+│   (self_corrector.py removed in audit round 5 — dead code; the consecutive-loss
+│    brake + nightly retraining cover its role)
 ├── research/
 │   ├── walkforward.py       Rolling train/test OOS harness (single-leg)
 │   └── spreads.py           CREDIT-SPREAD backtester + walk-forward (real legs);
@@ -198,10 +199,8 @@ no-op until equity grows ~5×; proposals in that space are rejected on arithmeti
 
 - **Anomaly detector**: 3σ one-minute return → HALT (flatten + pause); realized-vol spikes
   → reduce-risk; stale data (>120s) → HALT; slow execution (>2s) → reduce-risk.
-- **Self-corrector** (bounded governor): losing streak (win<40% over ≥20 trades) → cut
-  risk 20% + raise conviction threshold; hot streak → +10% risk. Every knob is clamped
-  (risk 0.5–3%, thresholds 0.55–0.75, stop width 0.5–1.5×) and every change is logged.
-  It can never re-risk its way out of a drawdown.
+- **Consecutive-loss brake** replaces the former self-corrector (removed as dead code,
+  audit round 5): 6 straight losses pause entries, reset on any win. Risk-reducing only.
 - **Live-money gate**: real-money mode requires BOTH `--mode live` AND
   `execution.live_confirmed: true` in config. Defaults refuse.
 - **Ops fail-safes**: runner script aborts loudly if Gateway port is down; `--daily` exits
@@ -236,7 +235,17 @@ current bar; parquet µs-vs-ns index mismatch silently killing all but one trade
 thresholds set above the model's reachable maximum; width-based EV mis-modeling
 loss-given-breach.
 
-**Known validity caveat:** the same 90-day OOS window has now judged ~8 experiments. Its
+**Round-5 fill-model correction (2026-07-05):** the audit fixed session-crossing labels,
+stale-leg pricing, and polite stop fills. On the CORRECTED harness the same window reads:
+$5 baseline **PF 0.70, −$6.62/trade (126 tr)**; $10 width **PF 0.90, −$2.30/trade (122 tr)**.
+The table above is retained as the historical record of what each experiment was judged
+against at the time; the corrected harness is now authoritative. Two conclusions survive
+the correction: selling >> buying, and **wider width >> narrower** (+0.20 PF, robust across
+fill models). The absolute "first PF>1.0" claim did not survive and is retracted. Reality
+likely sits between the optimistic old harness and the deliberately pessimistic new one —
+the TradeLog's est-vs-fill columns will locate it.
+
+**Known validity caveat:** the same 90-day OOS window has now judged ~11 experiments. Its
 p-values are eroding (multiple comparisons); treat further reuse skeptically. Fresh
 evidence comes from (a) the live TradeLog and (b) extending history within the 2-year data
 entitlement.
@@ -260,8 +269,7 @@ targets, and regime clustering. `python -m src.utils.trade_log` reports with a h
    better** (verified working: `auto-retrain 2026-07-05`).
 2. **Next morning 9:25:** runner `git pull`s the improved models before trading.
 3. **Intraday:** performance monitor tracks rolling win rate; consecutive-loss brake pauses
-   entries after 6 straight losses; self-corrector applies bounded de-risking on longer
-   degradation (<40% win over 50 trades).
+   entries after 6 straight losses.
 4. **Continuously:** the TradeLog accumulates the decision-context + fill dataset that
    future upgrades will be trained and judged on.
 
