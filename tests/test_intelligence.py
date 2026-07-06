@@ -181,6 +181,50 @@ def test_event_guard_block_and_widen(tmp_path):
     assert g.check(date(2026, 7, 15)) is None
 
 
+# --- GEX aggregation (R10 / H7) ------------------------------------------------------
+def test_compute_gex_signs_wall_and_skips():
+    from src.data.polygon_options import compute_gex
+    def row(ctype, strike, gamma, oi, spot=700.0):
+        return {"greeks": {"gamma": gamma}, "open_interest": oi,
+                "details": {"strike_price": strike, "contract_type": ctype},
+                "underlying_asset": {"price": spot}}
+    rows = [
+        row("call", 700, 0.05, 1000),          # +0.05*1000*100*700 = +3.5e6
+        row("put", 695, 0.04, 2000),           # -0.04*2000*100*700 = -5.6e6 (wall: mass 80)
+        {"greeks": {}, "open_interest": 500,   # no gamma -> skipped
+         "details": {"strike_price": 650, "contract_type": "put"},
+         "underlying_asset": {"price": 700.0}},
+        row("call", 705, 0.03, 0),             # zero OI -> skipped
+    ]
+    g = compute_gex(rows)
+    assert g["n_used"] == 2
+    assert abs(g["gex_net"] - (3.5e6 - 5.6e6)) < 1e-3   # net NEGATIVE gamma environment
+    assert g["gamma_wall"] == 695.0                      # largest |gamma x OI|
+    assert compute_gex([]) is None
+    assert compute_gex([rows[2]]) is None                # nothing usable
+
+
+# --- black-swan drill (safety machinery under extreme synthetic inputs) ---------------
+def test_black_swan_drill_halts_and_defends(cfg):
+    """Synthetic-extreme inputs are allowed ONLY in tests: verify the fail-safes fire in
+    concert — anomaly HALT on a crash bar, gap guard on a crash open, defense trigger at
+    the short strike — the layers that protect a no-stop book."""
+    from src.execution.risk import defense_triggered, gap_exceeds
+    from src.learning.anomaly_detector import AnomalyAction, AnomalyDetector
+
+    det = AnomalyDetector(cfg)
+    for _ in range(60):                      # calm warmup
+        det.observe(0.0001, 0.15)
+    crash = det.check(-0.04, 0.90)           # -4% in one minute, vol explosion
+    assert crash.action == AnomalyAction.HALT and "PRICE_SHOCK" in crash.kinds
+
+    assert gap_exceeds(-0.05, 0.01)          # -5% overnight gap -> no entries all day
+
+    # Bull put short at 700: a crash through the strike must trip the defense predicate
+    # (available layer even though defense ships OFF by default).
+    assert defense_triggered("bull_put", 699.0, 700.0, 0.001)
+
+
 # --- stop-cost regimes (R8 / H6) -----------------------------------------------------
 def test_stop_cost_regimes():
     from src.execution.risk import stop_cost

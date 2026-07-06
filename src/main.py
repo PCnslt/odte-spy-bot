@@ -235,6 +235,7 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
     open_spreads: list[dict] = []
     gap_day = None          # opening-gap guard state (checked once per session)
     gap_block = False
+    gex = None              # R10/H7: session GEX telemetry (fetched once with gap check)
 
     def _record_close(pos: dict, exit_cost: float, reason: str, now,
                       exit_cost_est: float | None = None, limit_exit: bool = False) -> None:
@@ -376,6 +377,17 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                         alerter.send(f"GAP GUARD: overnight gap {g:+.2%} >= "
                                      f"{intel.get('gap_guard_pct', 0.01):.2%} — no new "
                                      f"entries today.", level="WARN")
+                    # R10/H7: session GEX telemetry (naive dealer-gamma from the real
+                    # 0DTE chain). Observational only until H7's pre-registered test.
+                    gex = None
+                    if iv_client is not None:
+                        try:
+                            gex = iv_client.gex_snapshot(now.date())
+                            if gex:
+                                log.info("GEX: net=%.3g gamma_wall=%s (n=%d)",
+                                         gex["gex_net"], gex["gamma_wall"], gex["n_used"])
+                        except Exception as exc:
+                            log.info("GEX snapshot failed: %s", exc)
                 if gap_block:
                     if once:
                         break
@@ -522,7 +534,9 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                                                 rv_60m=rv_60m,
                                                 rvol=snap.rvol, atr_5=snap.atr_5min,
                                                 minutes_into_session=snap.features.get(
-                                                    "minutes_into_session"))
+                                                    "minutes_into_session"),
+                                                gex_net=(gex or {}).get("gex_net"),
+                                                gamma_wall=(gex or {}).get("gamma_wall"))
                                         except Exception as exc:
                                             log.warning("TradeLog open failed: %s", exc)
                                         alerter.send(

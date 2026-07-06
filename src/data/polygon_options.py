@@ -59,6 +59,38 @@ class PolygonError(RuntimeError):
     pass
 
 
+def compute_gex(rows: list[dict]) -> Optional[dict]:
+    """Aggregate a chain snapshot into naive GEX. Pure function (unit-tested).
+
+    Per contract: gamma x open_interest x 100 x spot, calls +, puts -. Returns
+    {'gex_net': $ per 1% move (approx, naive convention), 'gamma_wall': strike with max
+    |gamma x OI|, 'n_used': contracts with usable greeks} or None if nothing usable."""
+    net = 0.0
+    wall_strike, wall_mass = None, 0.0
+    n_used = 0
+    for c in rows or []:
+        greeks = c.get("greeks") or {}
+        gamma = greeks.get("gamma")
+        oi = c.get("open_interest") or 0
+        det = c.get("details") or {}
+        strike = det.get("strike_price")
+        ctype = det.get("contract_type")
+        spot = (c.get("underlying_asset") or {}).get("price")
+        if gamma is None or not oi or strike is None or ctype not in ("call", "put") \
+                or not spot:
+            continue
+        sign = 1.0 if ctype == "call" else -1.0
+        contrib = sign * float(gamma) * float(oi) * 100.0 * float(spot)
+        net += contrib
+        mass = abs(float(gamma) * float(oi))
+        if mass > wall_mass:
+            wall_mass, wall_strike = mass, float(strike)
+        n_used += 1
+    if n_used == 0:
+        return None
+    return {"gex_net": net, "gamma_wall": wall_strike, "n_used": n_used}
+
+
 class PolygonOptions:
     def __init__(self, api_key: str, base_url: str = "https://api.polygon.io",
                  cache_dir: str | Path = "data", rate_limit_per_min: int = 0):
@@ -202,6 +234,22 @@ class PolygonOptions:
         if _day_is_complete(end):
             df.to_parquet(cache)
         return df
+
+    def gex_snapshot(self, expiry: date, underlying: str = "SPY") -> Optional[dict]:
+        """Naive 0DTE gamma-exposure snapshot from the REAL chain (R10 instrumentation).
+
+        Uses the live chain snapshot (Starter-entitled): per contract, gamma x OI x 100 x
+        spot, calls positive / puts negative (the standard naive dealer-positioning
+        convention). Also reports the 'gamma wall' (strike with the largest absolute
+        gamma x OI). Contracts without greeks (deep ITM/OTM) are skipped — they carry
+        ~zero gamma. Telemetry only until H7's pre-registered test; fail-safe None."""
+        try:
+            rows = self._get(f"{self.base_url}/v3/snapshot/options/{underlying}",
+                             {"expiration_date": f"{expiry:%Y-%m-%d}", "limit": 250})
+        except Exception as exc:
+            log.info("gex_snapshot unavailable: %s", exc)
+            return None
+        return compute_gex(rows)
 
     def current_iv(self, option_ticker: str, underlying: str = "SPY") -> Optional[float]:
         """Implied volatility of a contract from the LIVE snapshot (Starter-entitled).

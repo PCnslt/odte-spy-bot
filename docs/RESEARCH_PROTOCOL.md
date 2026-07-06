@@ -100,6 +100,29 @@ project before this one. Rules here bind all future research, human- or AI-propo
   +$3.28/trade (from +$7.96 on the retired window) — sign stable, magnitude was
   calm-window-inflated. H5's holdout prior is correspondingly weaker.
 
+### H7 — dealer gamma (GEX) and short-premium expectancy (REGISTERED R10, observational)
+- **Instrumentation:** naive 0DTE net GEX + gamma-wall strike computed once per session
+  from the real chain snapshot (`gex_snapshot`), logged on every trade (`gex_net`,
+  `gamma_wall`). Telemetry only — no gating.
+- **Pre-registered prediction (written before any data exists):** trades opened on
+  net-POSITIVE-GEX sessions have higher expectancy than trades on net-negative sessions
+  (mechanism: positive dealer gamma suppresses realized vol → favorable for short premium).
+- **Test:** difference in $/trade between GEX-positive and GEX-negative session groups;
+  bootstrap 95% CI. **Accept:** CI lower bound > $0 at n ≥ 60 trades per group.
+- **Kill:** if the naive snapshot is unavailable (None) on > 30% of sessions after two
+  weeks, the instrumentation is broken — fix or withdraw before evaluating.
+
+## Parking lot — designated future TradeLog consumers (NOT registered; revisit at n ≥ 200)
+- **Meta-labeler** (filter which entries to keep): requires ≥200 real trades as training
+  data. Training it on harness trades from a signal proven uninformative would be
+  learning to filter noise with noise.
+- **Slippage predictor** (expected fill cost by time-of-day/spread state): requires the
+  TradeLog's est-vs-fill columns at n ≥ 200 fills.
+- **IV-percentile entry gate**: requires months of self-logged `iv_short` history (no
+  vendor IV history on this plan).
+- **Trained regime→trade-allowed classifier**: requires per-regime outcome counts the
+  month-1 report will begin accumulating.
+
 ## Appendix — Month-1 live evaluation table (adopted R8)
 
 | Metric | v1-ish fills | v3-ish fills | Suspension trigger |

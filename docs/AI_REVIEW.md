@@ -370,6 +370,31 @@ unlikely unless live fills prove materially better than v3's pessimistic model. 
 scheduled (after ≥1 month of live A/B) per protocol; the TradeLog's est-vs-fill data is
 now decisive for whether the strategy family survives at all.
 
+---
+
+# Round 10 — the "next-gen enhancement" blueprint: graded, one build (2026-07-05)
+
+The proposal was DeepSeek's most sophisticated — much of it is this project's own protocol
+reflected back (pre-registration, cost realism, fail-closed, the holdout). Grading against
+the standing tests (data exists? powered at our n? fits the loop? already tried?):
+
+| Proposal | Verdict | Reason |
+|---|---|---|
+| **GEX / dealer-gamma telemetry** | ✅ **BUILT (instrument-first)** | The one new idea that is real AND feasible today: chain snapshot with greeks+OI is Starter-entitled (verified live). `compute_gex` + per-session capture + TradeLog columns + **H7 pre-registered** with a written directional prediction. No gating until H7's test. |
+| Adversarial stress drill | ✅ Built (as software test) | Synthetic-extreme inputs confined to `tests/` (policy-compliant): the black-swan drill verifies anomaly-HALT, gap guard, and strike-defense fire in concert — the layers protecting a no-stop book. |
+| Order-flow / tape / depth features | ❌ Rejected | Data does not exist on any owned entitlement (ticks need Developer; depth needs far more). |
+| HAR-RV intraday vol forecaster | ⏸ Deferred | Same target as the existing (telemetry-only) range forecaster; adding a second unconsumed vol model creates maintenance, not evidence. Revisit if H7/H1 analyses show vol-forecast columns carry signal. |
+| Regime HMM → trade-allowed flag | ⏸ Deferred | Needs labeled outcomes (live trades). Crude gates already exist (event/gap/anomaly/brake); month-1 per-regime stats are the prerequisite data. |
+| Multi-objective strike/width optimizer | ❌ Rejected for now | Its inputs (P(touch), conditional loss, slippage model) are exactly the models that failed or don't exist yet. An optimizer over garbage inputs is a garbage amplifier. Width A/B is the honest primitive. |
+| Meta-labeling | ⏸ Parked (protocol parking lot, n ≥ 200) | Legit technique; zero training rows today. |
+| Slippage predictor | ⏸ Parked (n ≥ 200 fills) | Already instrumented; model later. |
+| RL exit policy | ❌ Rejected | Violates the standing no-RL rule (which DeepSeek itself set in round 4). |
+| Kelly sizing | ❌ Rejected (5th sizing rejection) | qty pinned at 1; Kelly additionally requires calibrated win-prob estimates that don't exist. |
+| DynamoDB / MLflow / dashboards | ❌ Rejected | Single-host system; SQLite + logs + this document ARE the registry. |
+| Historical crash replay (2018/2020) | ❌ Not possible | Data entitlement reaches ~2024-07 only. |
+| Shadow-mode model deployment | ⏸ Deferred | Good pattern; no candidate model to shadow. Reconsider with the first parking-lot model. |
+| "Deep question" (is retail 0DTE viable?) | Already answered by the system | Under pessimistic fills: no. Under real fills: being measured from the first live session. The framework is the durable asset either way; any pivot (45-DTE, etc.) goes through this same protocol. |
+
 ## Risk assessment of the adopted design (no bullshit)
 
 - **The range model can be wrong at exactly the wrong time.** Vol forecasts fail hardest
