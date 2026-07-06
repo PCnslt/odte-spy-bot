@@ -112,6 +112,26 @@ project before this one. Rules here bind all future research, human- or AI-propo
 - **Kill:** if the naive snapshot is unavailable (None) on > 30% of sessions after two
   weeks, the instrumentation is broken — fix or withdraw before evaluating.
 
+### H8 — market-implied touch-probability EV gate (REGISTERED R12, observational)
+- **Instrumentation:** the short leg's delta (from the real chain snapshot) and
+  `prob_touch = min(2·|delta|, 1)` are logged on every trade. This is the risk-neutral
+  P(reaching the short strike) from live prices — not Black-Scholes.
+- **Surrogate EV (the blueprint's SEV, computed for evaluation, NOT yet gating):**
+  `SEV = credit·(1 − p_touch·L) − p_touch·L·(width − credit)`, where p_touch = 2·|delta|
+  and L (conditional-loss fraction given touch) is estimated from the TradeLog's own
+  realized touched-trade outcomes once n permits (until then L = 1, pessimistic).
+- **Prediction (written before data):** trades with SEV > 0 have higher expectancy than
+  SEV ≤ 0. **Accept** (as a live gate) only if the SEV>0 group's $/trade 95% CI exceeds
+  the SEV≤0 group's at n ≥ 60/group. Entry-side gating has failed twice before (EV v1/v2),
+  so the bar is deliberately high and it ships OFF until it clears.
+
+### H9 — IV skew / ATM-IV regime (REGISTERED R12, observational)
+- **Instrumentation:** session ATM IV and 25-delta skew (put25 − call25) logged per trade.
+- **Prediction:** short-premium expectancy is higher when 25-delta skew is ELEVATED
+  (steep downside skew = richer premium for the risk actually taken). **Accept** as a
+  filter only if the top-tercile-skew group beats the bottom by ≥ $2/trade, 95% CI > $0,
+  n ≥ 60/group.
+
 ## Parking lot — designated future TradeLog consumers (NOT registered; revisit at n ≥ 200)
 - **Meta-labeler** (filter which entries to keep): requires ≥200 real trades as training
   data. Training it on harness trades from a signal proven uninformative would be

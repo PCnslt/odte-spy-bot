@@ -60,17 +60,30 @@ class PolygonError(RuntimeError):
 
 
 def compute_gex(rows: list[dict]) -> Optional[dict]:
-    """Aggregate a chain snapshot into naive GEX. Pure function (unit-tested).
+    """Aggregate a chain snapshot into naive GEX + surface features. Pure (unit-tested).
 
-    Per contract: gamma x open_interest x 100 x spot, calls +, puts -. Returns
-    {'gex_net': $ per 1% move (approx, naive convention), 'gamma_wall': strike with max
-    |gamma x OI|, 'n_used': contracts with usable greeks} or None if nothing usable."""
+    Per contract: gamma x open_interest x 100 x spot, calls +, puts -.
+    Returns None if nothing usable, else:
+      gex_net     - naive $ dealer gamma per 1% move (calls +, puts -)
+      gamma_wall  - strike with the largest |gamma x OI| (pin magnet)
+      atm_iv      - IV of the call+put nearest spot, averaged
+      skew_25d    - 25-delta risk reversal: IV(put ~ -0.25 delta) - IV(call ~ +0.25 delta);
+                    positive = downside fear priced richer (the usual index state)
+      n_used      - contracts with usable greeks
+    All market-implied, no Black-Scholes. Off-hours the snapshot lacks greeks -> None."""
     net = 0.0
     wall_strike, wall_mass = None, 0.0
     n_used = 0
+    atm_call_iv = atm_put_iv = None
+    atm_call_d = atm_put_d = float("inf")
+    # nearest-to-target-delta trackers for the 25-delta skew
+    put_iv_25 = call_iv_25 = None
+    put_25_err = call_25_err = float("inf")
     for c in rows or []:
         greeks = c.get("greeks") or {}
         gamma = greeks.get("gamma")
+        delta = greeks.get("delta")
+        iv = c.get("implied_volatility")
         oi = c.get("open_interest") or 0
         det = c.get("details") or {}
         strike = det.get("strike_price")
@@ -80,15 +93,44 @@ def compute_gex(rows: list[dict]) -> Optional[dict]:
                 or not spot:
             continue
         sign = 1.0 if ctype == "call" else -1.0
-        contrib = sign * float(gamma) * float(oi) * 100.0 * float(spot)
-        net += contrib
+        net += sign * float(gamma) * float(oi) * 100.0 * float(spot)
         mass = abs(float(gamma) * float(oi))
         if mass > wall_mass:
             wall_mass, wall_strike = mass, float(strike)
         n_used += 1
+        # ATM IV: closest strike to spot on each side
+        dist = abs(float(strike) - float(spot))
+        if iv is not None:
+            if ctype == "call" and dist < atm_call_d:
+                atm_call_d, atm_call_iv = dist, float(iv)
+            if ctype == "put" and dist < atm_put_d:
+                atm_put_d, atm_put_iv = dist, float(iv)
+            # 25-delta skew: put near -0.25, call near +0.25
+            if delta is not None:
+                if ctype == "put" and abs(abs(float(delta)) - 0.25) < put_25_err:
+                    put_25_err, put_iv_25 = abs(abs(float(delta)) - 0.25), float(iv)
+                if ctype == "call" and abs(abs(float(delta)) - 0.25) < call_25_err:
+                    call_25_err, call_iv_25 = abs(abs(float(delta)) - 0.25), float(iv)
     if n_used == 0:
         return None
-    return {"gex_net": net, "gamma_wall": wall_strike, "n_used": n_used}
+    atm_iv = None
+    ivs = [v for v in (atm_call_iv, atm_put_iv) if v is not None]
+    if ivs:
+        atm_iv = sum(ivs) / len(ivs)
+    skew_25d = (put_iv_25 - call_iv_25) if (put_iv_25 is not None
+                                            and call_iv_25 is not None) else None
+    return {"gex_net": net, "gamma_wall": wall_strike, "atm_iv": atm_iv,
+            "skew_25d": skew_25d, "n_used": n_used}
+
+
+def prob_touch(delta: Optional[float]) -> Optional[float]:
+    """Market-implied probability of the underlying TOUCHING a strike before expiry, from
+    that strike's option delta. |delta| ~ risk-neutral P(finish ITM); P(touch) ~ 2 x that
+    (reflection principle for a barrier), capped at 1. This is the spread-seller's core
+    risk number, taken from real market prices rather than a Black-Scholes assumption."""
+    if delta is None:
+        return None
+    return min(2.0 * abs(float(delta)), 1.0)
 
 
 class PolygonOptions:
@@ -251,19 +293,28 @@ class PolygonOptions:
             return None
         return compute_gex(rows)
 
-    def current_iv(self, option_ticker: str, underlying: str = "SPY") -> Optional[float]:
-        """Implied volatility of a contract from the LIVE snapshot (Starter-entitled).
-        Present-time only — Polygon has no IV history on this plan, which is exactly why
-        the TradeLog records it at every entry. Returns None if unavailable."""
+    def contract_snapshot(self, option_ticker: str, underlying: str = "SPY") -> dict:
+        """Live per-contract IV + greeks from the snapshot (Starter-entitled). Present-time
+        only (no IV/greeks history on this plan — the reason the TradeLog records them at
+        entry). Returns {'iv','delta','gamma'} with None for any unavailable field; all
+        None off-hours or for illiquid strikes (fail-safe)."""
         try:
             resp = self._request(
                 f"{self.base_url}/v3/snapshot/options/{underlying}/{option_ticker}",
                 {"apiKey": self.api_key})
-            iv = (resp.json().get("results") or {}).get("implied_volatility")
-            return float(iv) if iv is not None else None
+            r = resp.json().get("results") or {}
+            g = r.get("greeks") or {}
+            def _f(x):
+                return float(x) if x is not None else None
+            return {"iv": _f(r.get("implied_volatility")), "delta": _f(g.get("delta")),
+                    "gamma": _f(g.get("gamma"))}
         except Exception as exc:
-            log.info("current_iv unavailable for %s: %s", option_ticker, exc)
-            return None
+            log.info("contract_snapshot unavailable for %s: %s", option_ticker, exc)
+            return {"iv": None, "delta": None, "gamma": None}
+
+    def current_iv(self, option_ticker: str, underlying: str = "SPY") -> Optional[float]:
+        """Back-compat thin wrapper around contract_snapshot -> IV only."""
+        return self.contract_snapshot(option_ticker, underlying).get("iv")
 
     def index_history(self, index_ticker: str, start: date, end: date) -> pd.DataFrame:
         """Real index minute bars, e.g. I:VIX1D (needs an Indices entitlement)."""

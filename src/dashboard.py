@@ -141,6 +141,10 @@ def generate(db_path: str = "trades.db", out_dir: Path = OUT_DIR) -> Path:
     gexp = sum(1 for r in rows if (r.get("gex_net") or 0) > 0)
     gexn = sum(1 for r in rows if (r.get("gex_net") or 0) < 0)
     md.append(f"| H7 GEX regime | GEX+: {gexp} · GEX−: {gexn} | ≥60/group |")
+    pt_n = sum(1 for r in rows if r.get("prob_touch") is not None)
+    sk_n = sum(1 for r in rows if r.get("skew_25d") is not None)
+    md.append(f"| H8 touch-prob EV | logged: {pt_n} | ≥60/group |")
+    md.append(f"| H9 skew regime | logged: {sk_n} | ≥60/group |")
     md.append(f"| H4 profit target | queued (starts after H2b) | — |")
     md.append("")
 

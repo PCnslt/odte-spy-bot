@@ -395,6 +395,37 @@ the standing tests (data exists? powered at our n? fits the loop? already tried?
 | Shadow-mode model deployment | ⏸ Deferred | Good pattern; no candidate model to shadow. Reconsider with the first parking-lot model. |
 | "Deep question" (is retail 0DTE viable?) | Already answered by the system | Under pessimistic fills: no. Under real fills: being measured from the first live session. The framework is the durable asset either way; any pivot (45-DTE, etc.) goes through this same protocol. |
 
+---
+
+# Round 12 — trading-logic blueprint: built the one grounded idea (2026-07-05)
+
+The blueprint (gate-score-filter, meta-labeler, SEV, adaptive exits) mostly re-proposed
+entry intelligence — which our own random-entry benchmark proved is noise. Rather than
+critique it again, extracted and BUILT its one technically strong, data-available point:
+
+**Market-implied probability-of-touch, from real option deltas (not Black-Scholes).** The
+Polygon chain snapshot we already fetch carries per-contract delta = risk-neutral P(ITM);
+`prob_touch = 2·|delta|` is the barrier-touch probability. Shipped:
+- `compute_gex` extended to also return **ATM IV** and **25-delta skew** from the same
+  once-per-session snapshot (no new calls).
+- `contract_snapshot()` (generalizes `current_iv`) returns the short leg's IV + delta in
+  the one call already made at entry -> `short_delta`, `prob_touch` logged per trade.
+- **H8** (SEV / touch-prob EV gate) and **H9** (skew regime) pre-registered — observational,
+  ships OFF; entry-side gating cleared a deliberately high bar after two prior EV-gate
+  failures. The SEV formula the blueprint wanted is now defined against real inputs and
+  computable from the TradeLog.
+
+Answer to the blueprint's hard question (recorded): the only defensible persistent edge is
+the volatility risk premium, conditional on dealer gamma (GEX). It is thin and our costs
+currently exceed it. H7 (GEX), H8 (touch-prob), H9 (skew) are now the instrumented tests of
+whether *conditioning* lifts expectancy above costs. If none do by the 500-trade kill rule,
+the strategy family is retired — no elaborate entry model overrides the random-entry result.
+
+Deferred (unchanged rationale): meta-labeler (needs ≥200 trades), slippage model (needs
+fills), multi-gate entry scorer (contradicts the zero-information entry evidence until a
+conditioning feature proves itself). Rejected: dynamic/Kelly sizing (qty pinned; 6th time),
+RL exits (standing ban).
+
 ## Risk assessment of the adopted design (no bullshit)
 
 - **The range model can be wrong at exactly the wrong time.** Vol forecasts fail hardest

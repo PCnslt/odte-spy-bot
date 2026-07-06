@@ -500,14 +500,20 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                                                     if "dn" in breach else None)
                                             p_up = (breach["up"].predict_one(snap.features)
                                                     if "up" in breach else None)
-                                            iv_short = None
+                                            # Short-leg market-implied risk (R12): one
+                                            # snapshot call -> IV + delta -> P(touch).
+                                            iv_short = short_delta = ptouch = None
                                             if iv_client is not None:
-                                                from .data.polygon_options import PolygonOptions as _P
+                                                from .data.polygon_options import (
+                                                    PolygonOptions as _P, prob_touch as _pt)
                                                 tick = _P.option_ticker(
                                                     float(spread["short"].strike),
                                                     "P" if kind == "bull_put" else "C",
                                                     now.date())
-                                                iv_short = iv_client.current_iv(tick)
+                                                snap_c = iv_client.contract_snapshot(tick)
+                                                iv_short = snap_c.get("iv")
+                                                short_delta = snap_c.get("delta")
+                                                ptouch = _pt(short_delta)
                                             # Trailing 60-min realized vol (H1's RV term).
                                             # R8 #2: TODAY's session only — near the open,
                                             # tail(60) would mix in yesterday's bars and
@@ -536,7 +542,10 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                                                 minutes_into_session=snap.features.get(
                                                     "minutes_into_session"),
                                                 gex_net=(gex or {}).get("gex_net"),
-                                                gamma_wall=(gex or {}).get("gamma_wall"))
+                                                gamma_wall=(gex or {}).get("gamma_wall"),
+                                                short_delta=short_delta, prob_touch=ptouch,
+                                                iv_atm=(gex or {}).get("atm_iv"),
+                                                skew_25d=(gex or {}).get("skew_25d"))
                                         except Exception as exc:
                                             log.warning("TradeLog open failed: %s", exc)
                                         alerter.send(

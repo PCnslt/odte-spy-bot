@@ -212,8 +212,9 @@ def test_dashboard_generates_empty_and_with_trades(tmp_path):
 # --- GEX aggregation (R10 / H7) ------------------------------------------------------
 def test_compute_gex_signs_wall_and_skips():
     from src.data.polygon_options import compute_gex
-    def row(ctype, strike, gamma, oi, spot=700.0):
-        return {"greeks": {"gamma": gamma}, "open_interest": oi,
+    def row(ctype, strike, gamma, oi, spot=700.0, iv=None, delta=None):
+        return {"greeks": {"gamma": gamma, "delta": delta}, "open_interest": oi,
+                "implied_volatility": iv,
                 "details": {"strike_price": strike, "contract_type": ctype},
                 "underlying_asset": {"price": spot}}
     rows = [
@@ -230,6 +231,30 @@ def test_compute_gex_signs_wall_and_skips():
     assert g["gamma_wall"] == 695.0                      # largest |gamma x OI|
     assert compute_gex([]) is None
     assert compute_gex([rows[2]]) is None                # nothing usable
+
+
+def test_compute_gex_atm_iv_and_skew():
+    from src.data.polygon_options import compute_gex
+    def row(ctype, strike, iv, delta, spot=700.0):
+        return {"greeks": {"gamma": 0.01, "delta": delta}, "open_interest": 100,
+                "implied_volatility": iv,
+                "details": {"strike_price": strike, "contract_type": ctype},
+                "underlying_asset": {"price": spot}}
+    rows = [
+        row("call", 700, 0.18, 0.50), row("put", 700, 0.20, -0.50),   # ATM: avg 0.19
+        row("call", 715, 0.16, 0.25), row("put", 685, 0.24, -0.25),   # 25-delta wings
+    ]
+    g = compute_gex(rows)
+    assert abs(g["atm_iv"] - 0.19) < 1e-9
+    assert abs(g["skew_25d"] - (0.24 - 0.16)) < 1e-9    # put_iv - call_iv, positive (fear)
+
+
+def test_prob_touch_from_delta():
+    from src.data.polygon_options import prob_touch
+    assert prob_touch(-0.20) == 0.40          # 2 x |delta|
+    assert prob_touch(0.10) == 0.20
+    assert prob_touch(-0.60) == 1.0           # capped at 1
+    assert prob_touch(None) is None
 
 
 # --- black-swan drill (safety machinery under extreme synthetic inputs) ---------------

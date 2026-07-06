@@ -56,7 +56,12 @@ class TradeLog:
                    # lets H2b condition on "both arms would have passed min_credit".
                    "alt_width_credit_est REAL",
                    # R10 / H7: naive 0DTE gamma exposure at session start (telemetry).
-                   "gex_net REAL", "gamma_wall REAL"]
+                   "gex_net REAL", "gamma_wall REAL",
+                   # R12 / H8-H9: market-implied risk features from the chain snapshot.
+                   "short_delta REAL",   # short leg's delta at entry
+                   "prob_touch REAL",    # 2*|delta| — market-implied P(reach short strike)
+                   "iv_atm REAL",        # ATM IV (session)
+                   "skew_25d REAL"]      # 25-delta risk reversal (session)
 
     def __init__(self, db_path: str | Path = "trades.db"):
         self._conn = sqlite3.connect(str(db_path))
@@ -73,7 +78,8 @@ class TradeLog:
         cols = ["opened_at", "kind", "short_strike", "long_strike", "width", "quantity",
                 "credit_est", "alt_width_credit_est", "spot", "regime", "ml_prob",
                 "range_pred", "p_breach_dn", "p_breach_up", "iv_short", "rv_annual",
-                "rv_60m", "rvol", "atr_5", "minutes_into_session", "gex_net", "gamma_wall"]
+                "rv_60m", "rvol", "atr_5", "minutes_into_session", "gex_net", "gamma_wall",
+                "short_delta", "prob_touch", "iv_atm", "skew_25d"]
         vals = [kw.get(c) for c in cols]
         cur = self._conn.execute(
             f"INSERT INTO trades ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
