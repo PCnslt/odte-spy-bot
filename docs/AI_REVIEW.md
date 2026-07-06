@@ -263,6 +263,66 @@ the live system actually sees); reality still likely sits between v1 and v3 fill
 TradeLog's est-vs-fill data is the instrument that will say where. The live width A/B
 continues — real fills outrank all of this.
 
+---
+
+# Round 7 — the "MASTER BUILD PROMPT" regression, rejected; the diagnostic that mattered (2026-07-05)
+
+## The proposal: rejected wholesale
+
+Round 7's external advice was a full-architecture rewrite: HF time-series transformers
+replacing LightGBM, Composio as the data/execution layer, DynamoDB replacing SQLite, FinBERT
+news sentiment, tiered risk multipliers, weekly K-Means. Verdict: **a regression to round 1**,
+re-proposing ideas this project already killed with evidence, plus new failures of arithmetic:
+
+- HF free inference = ~1,000 req/month ≈ 45/trading day; the loop polls ~720×/day. DOA.
+- QLoRA-tuning a 4B model nightly on a free 2-core GitHub runner: not feasible.
+- ~7,500 RTH bars/month is orders of magnitude short for transformer forecasting.
+- Composio is agent-session tooling; inserting a SaaS round-trip into a 30 s trading loop
+  adds latency + failure modes; multi-vendor bar mixing corrupts feature pipelines.
+- DynamoDB for a single-host system replaces a working zero-dependency SQLite with network
+  faults and cloud credentials, for nothing.
+- FinBERT: still no news feed (third rejection). Risk multipliers: qty still pinned at 1
+  (fourth). K-Means on trades: live trade count at proposal time was zero.
+
+It also answered none of our Q1–Q4. The effort went into answering Q1 ourselves instead.
+
+## The Q1 diagnostic — where the $10.86/trade actually goes
+
+Five-arm matrix, v3 harness, $5 width, same window (runs are DIAGNOSTIC, not variants):
+
+| Arm | Trades | Win | PF | $/trade |
+|---|---|---|---|---|
+| 1. Baseline (costs + 2× stop) | 104 | 59.6% | 0.56 | −$10.86 |
+| 2. No costs (stop on) | 104 | 62.5% | 0.74 | −$5.62 |
+| 3. No stop (costs on) | 76 | **81.6%** | **0.85** | **−$2.90** |
+| 4. No costs + no stop | 78 | 82.1% | **1.22** | **+$3.46** |
+| 5. RANDOM entries (costs + stop) | 125 | 62.4% | 0.62 | −$8.87 |
+| 6. No stop, $10 width (costs on) | 72 | 79.2% | 0.78 | −$6.13 |
+
+**Attribution:**
+- **(a) Entries carry ZERO information.** Random entries (PF 0.62) ≥ the full signal stack
+  (0.56). Every "improve the signal" proposal was aimed at a component that does nothing.
+- **(b) The 2× stop was the biggest self-inflicted wound.** Removing it: +0.29 PF, win rate
+  60→82%. 0DTE spread gamma noise trips premium stops constantly; the defined-risk structure
+  (max loss = width − credit) already IS the stop.
+- **(c) Costs ≈ $6.36/trade** (arm 3 vs 4): ~$2.60 commissions + modeled slippage.
+- **The gross engine is real but small:** +$3.46/trade before costs (PF 1.22). Viability =
+  keeping arm-3 mechanics while closing ~$3/trade of cost — which is precisely what the
+  live-only improvements (limit-at-mid exits, quote-mid entries) attack, and what the
+  TradeLog measures from the first fill.
+- **Width flips under no-stop:** $5 (0.85) beats $10 (0.78) — unstopped tails punish width.
+  H2b's live A/B continues (pre-registered; live evidence is fresh), with priors updated.
+
+## Master decisions (Claude, engineer-of-record)
+
+1. **Live exits: hold-to-target** (`stop_mult: 999`) — stop only at the structural max-loss
+  cap. Effect size (+0.29 PF), sign-stable across v2/v3 fill models, mechanism understood.
+2. **H5 pre-registered, replacing H2's holdout slot** (H2's exploratory basis collapsed):
+  $5 width, no premium stop, v3 harness, holdout look, accept PF > 1.00.
+3. DeepSeek's architecture: not implemented. This document is the rationale.
+4. Window-wear count after diagnostics: ~19 looks. The 90-day window is retired for
+  anything but sanity checks; evidence now comes from the TradeLog and (once) the holdout.
+
 ## Risk assessment of the adopted design (no bullshit)
 
 - **The range model can be wrong at exactly the wrong time.** Vol forecasts fail hardest

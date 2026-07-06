@@ -43,7 +43,12 @@ spread:
   width: 5                   # dollars between short and long strike (max loss = width - credit)
   short_otm_pct: 0.002       # place the short leg this far OTM from spot
   profit_target_frac: 0.5    # close when you've captured this fraction of the credit
-  stop_mult: 2.0             # stop when the spread costs this multiple of the credit to close
+  # DIAGNOSTIC-DRIVEN (2026-07-05, AI_REVIEW R7): the 2x premium stop was the single
+  # biggest self-inflicted wound — 0DTE gamma noise tripped it constantly, converting
+  # recoverable drawdowns into realized losses (removing it: PF 0.56 -> 0.85, win 60% ->
+  # 82%, robust across fill models). 999 = hold to profit-target/time/flatten; risk stays
+  # DEFINED by construction (max loss = width - credit; sl_cost is capped at width).
+  stop_mult: 999.0
   min_credit: 0.10           # skip if the net credit is below this (not worth the risk/fees)
   # Spreads need TIME for theta to work — do not inherit the scalper's 10-min time stop.
   max_hold_minutes: 240      # hold up to this long (still flattened before the close)

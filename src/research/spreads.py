@@ -271,7 +271,7 @@ def simulate(cfg, bars, features, probs, poly, include_vix, allow_dates=None,
 
 
 def run(cfg, days=90, train_win=20, test_win=5, quantile=None, verbose=True, smart=False,
-        ev_gate=False):
+        ev_gate=False, shuffle_probs=False):
     """`smart=True` mirrors the live intelligence layer: per-fold range forecaster trained
     on the fold's train window drives dynamic strike placement + strike-defense exits.
     `ev_gate=True` trains per-fold breach classifiers and skips entries whose credit does
@@ -319,6 +319,12 @@ def run(cfg, days=90, train_win=20, test_win=5, quantile=None, verbose=True, sma
             cfg.signal._data["ml_threshold_short"] = float(np.quantile(tp, quantile))
             cfg.signal.ml_threshold_short = cfg.signal._data["ml_threshold_short"]
         probs = clf.predict_proba(features)
+        if shuffle_probs:
+            # DIAGNOSTIC ONLY (random-entry benchmark): destroy any information link
+            # between model and market while preserving the probability distribution,
+            # threshold structure, and entry frequency. If shuffled ~= real, the entry
+            # stack carries no information; if shuffled > real, entries are ANTI-timed.
+            probs = np.random.default_rng(42 + start).permutation(probs)
 
         range_preds = None
         if smart:

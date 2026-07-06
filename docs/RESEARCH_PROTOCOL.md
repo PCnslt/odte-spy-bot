@@ -67,6 +67,19 @@ project before this one. Rules here bind all future research, human- or AI-propo
   by more than $0.05 (else disable `limit_exits`). **Minimum n:** 50 limit exits.
 - **Data:** TradeLog `exit_slippage`, `limit_exit`.
 
+### H5 — no-premium-stop exits (REGISTERED 2026-07-05; replaces H2's holdout slot)
+- **Context (diagnostic, not variant-shopping):** the R7 attribution matrix showed the 2×
+  premium stop was the largest self-inflicted loss (baseline PF 0.56 → 0.85 without it;
+  win 60% → 82%; sign-stable across v2/v3 fill models; mechanism: 0DTE gamma noise trips
+  premium stops, while max loss is already capped by construction). Random-entry benchmark
+  showed entries carry no information, so exits+costs are the only levers.
+- **Hypothesis:** $5-width, no premium stop (hold to 50% PT / 240-min / 15:55 flatten),
+  achieves **PF > 1.00** on the reserved holdout under harness v3.
+- **Test:** ONE look, `stop_mult=999`, all else baseline. This CONSUMES holdout look #1.
+  H2 ($10-width) is demoted to the spare look and only taken if live A/B revives it.
+- **Live config aligned 2026-07-05** (`spread.stop_mult: 999`) — live paper evidence
+  accumulates under the same mechanics the holdout will judge.
+
 ### H4 — profit-target A/B (QUEUED — do not start yet)
 - **Design:** PT ∈ {40%, 60%} by the same deterministic hash; two arms only (three is
   underpowered below n≈200).
