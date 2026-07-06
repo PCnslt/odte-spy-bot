@@ -25,6 +25,10 @@ limits:
   max_daily_loss_pct: 0.02   # halt for the day if realized+open PnL <= -2% of equity
   max_concurrent_positions: 1
   time_stop_minutes: 10      # force-close any position after this many minutes
+  # Faster brake than the 20-trade self-corrector window: after this many CONSECUTIVE
+  # losses (across days), pause new entries until a manual restart or the next session.
+  # Risk-reducing only; a win resets the counter.
+  max_consecutive_losses: 6
 
 anomaly:
   price_sigma: 3.0           # |z| of 1m return that triggers a price shock

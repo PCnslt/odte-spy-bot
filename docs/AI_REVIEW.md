@@ -120,6 +120,32 @@ Ideas proposed (by humans and AIs) that *sounded* right: **6**. Survived out-of-
 quote-mid entries, limit-first exits, event guard). The baseline strategy remains the
 best known configuration. This is what edge-hunting actually looks like.
 
+---
+
+# Round 3 — recycled ideas, one valid thread (2026-07-05)
+
+Round 3 re-proposed regime sizing (still impossible: qty pinned at 1 at $10k), IV/RV
+gating (no IV history exists → cannot pass the gauntlet), Optuna profit targets (tuning on
+the same overused 90-day window = overfitting by construction), and a fill-quality model
+"trained on IBKR paper fills" (of which there were **zero** at proposal time).
+
+**The valid thread was #5: prepare for when data exists.** Generalized and built:
+
+1. **TradeLog** (`src/utils/trade_log.py`, `trades.db`): every live trade records its full
+   decision context — regime, ML prob, range forecast, breach probabilities, **short-leg IV
+   (Polygon snapshot at entry) vs realized vol**, RVOL/ATR/session-time — plus execution
+   truth: estimated vs filled credit, estimated vs filled exit cost, limit-vs-market path.
+   This table is the training set that IV/RV gating, fill-quality prediction, dynamic
+   profit targets, and regime clustering were all missing. `python -m src.utils.trade_log`
+   prints per-regime / slippage / IV-bucket stats, with a hard "n<30 = noise" warning.
+2. **Consecutive-loss brake** (`risk.limits.max_consecutive_losses: 6`): pauses new entries
+   after 6 straight losses — a faster circuit than the 20-trade self-corrector window.
+   Risk-reducing only, no model, resets on any win. Addresses the one fair criticism
+   (reactive risk) with plumbing instead of an unpowered model.
+
+**Standing rule for future rounds:** proposals that need data the system doesn't have are
+neither accepted nor rejected — they are *instrumented*, and the TradeLog decides later.
+
 ## Risk assessment of the adopted design (no bullshit)
 
 - **The range model can be wrong at exactly the wrong time.** Vol forecasts fail hardest

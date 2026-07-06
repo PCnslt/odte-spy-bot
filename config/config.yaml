@@ -116,6 +116,7 @@ execution:
 
 memory:
   db_path: memory.db
+  trade_log_path: trades.db   # per-trade decision context + fills (training data for deferred ideas)
   time_gate_minutes: 3       # min gap between decisions on same symbol
   max_bias_changes_per_hour: 2
 

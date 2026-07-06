@@ -24,10 +24,12 @@ class PositionManager:
         self.max_trades_per_day = limits["max_trades_per_day"]
         self.max_daily_loss_pct = limits["max_daily_loss_pct"]
         self.max_concurrent = limits["max_concurrent_positions"]
+        self.max_consecutive_losses = limits.get("max_consecutive_losses", 6)
 
         self._day: Optional[date] = None
         self.trades_today = 0
         self.realized_pnl_today = 0.0
+        self.consecutive_losses = 0
         self.halted = False
 
     # --- daily bookkeeping -----------------------------------------------------
@@ -44,11 +46,21 @@ class PositionManager:
 
     def record_result(self, pnl: float) -> None:
         self.realized_pnl_today += pnl
+        # Consecutive-loss brake: counts across days, resets on any win.
+        if pnl < 0:
+            self.consecutive_losses += 1
+            if self.consecutive_losses >= self.max_consecutive_losses:
+                log.warning("Consecutive-loss brake: %d straight losses; pausing entries.",
+                            self.consecutive_losses)
+        else:
+            self.consecutive_losses = 0
 
     def can_open(self, now: datetime, equity: float, open_count: int) -> tuple[bool, str]:
         self._roll_day(now)
         if self.halted:
             return False, "halted"
+        if self.consecutive_losses >= self.max_consecutive_losses:
+            return False, "consecutive_loss_brake"
         if open_count >= self.max_concurrent:
             return False, "max_concurrent"
         if self.trades_today >= self.max_trades_per_day:

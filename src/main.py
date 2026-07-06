@@ -33,6 +33,7 @@ from .utils.alerts import Alerter
 from .utils.config import load_config
 from .utils.events import EventGuard
 from .utils.logger import get_logger, setup_logging
+from .utils.trade_log import TradeLog
 
 log = get_logger("main")
 
@@ -158,6 +159,15 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
 
     intel = cfg.intelligence
     events = EventGuard(intel.get("events_file", "config/events.yaml"))
+    tradelog = TradeLog(cfg.memory.get("trade_log_path", "trades.db"))
+
+    # Polygon client for entry-time IV capture (telemetry only; fail-safe to None).
+    iv_client = None
+    try:
+        from .data.polygon_options import PolygonOptions
+        iv_client = PolygonOptions.from_config(cfg)
+    except Exception as exc:
+        log.info("IV capture disabled (no Polygon client): %s", exc)
 
     open_t, close_t = _parse(cfg.session.market_open), _parse(cfg.session.market_close)
     no_new_t, flatten_t = _parse(cfg.session.no_new_trades_after), _parse(cfg.session.flatten_time)
@@ -172,12 +182,22 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
 
     open_spreads: list[dict] = []
 
-    def _record_close(pos: dict, exit_cost: float, reason: str, now) -> None:
+    def _record_close(pos: dict, exit_cost: float, reason: str, now,
+                      exit_cost_est: float | None = None, limit_exit: bool = False) -> None:
         tr = SpreadTrade(pos["open_time"], now, pos["spread"]["kind"],
                          round(pos["credit"], 2), round(max(exit_cost, 0.0), 2),
                          pos["quantity"], reason, commission=commission * pos["quantity"] * 4)
         monitor.update(tr)
         pm.record_result(tr.pnl)
+        if pos.get("trade_id") is not None:
+            try:
+                tradelog.close_trade(
+                    pos["trade_id"], closed_at=now.isoformat(), exit_reason=reason,
+                    exit_cost_est=exit_cost_est if exit_cost_est is not None else exit_cost,
+                    exit_cost_fill=exit_cost if limit_exit else None,
+                    credit_fill=pos["credit"], pnl=tr.pnl, limit_exit=limit_exit)
+            except Exception as exc:
+                log.warning("TradeLog close failed: %s", exc)
         alerter.send(f"CLOSE {pos['spread']['kind']} x{pos['quantity']} {reason} "
                      f"credit={tr.credit:.2f} cost={tr.exit_cost:.2f} pnl=${tr.pnl:.2f}")
 
@@ -188,14 +208,16 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                 done, actual_cost = broker.close_fill(pos)
                 if done:
                     _record_close(pos, actual_cost if actual_cost is not None
-                                  else pos["close_cost"], pos["close_reason"], now)
+                                  else pos["close_cost"], pos["close_reason"], now,
+                                  exit_cost_est=pos["close_cost"], limit_exit=True)
                     open_spreads.remove(pos)
                 elif force or ((now - pos["close_since"]).total_seconds()
                                > intel.get("limit_exit_escalate_s", 120)):
                     broker.escalate_close(pos)
                     cost_now = feed.spread_close_cost(pos["spread"])
                     _record_close(pos, cost_now if cost_now is not None
-                                  else pos["close_cost"], pos["close_reason"], now)
+                                  else pos["close_cost"], pos["close_reason"], now,
+                                  exit_cost_est=pos["close_cost"], limit_exit=False)
                     open_spreads.remove(pos)
                 continue
 
@@ -358,6 +380,38 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                                     if pos:
                                         open_spreads.append(pos)
                                         pm.on_open()
+                                        # --- TradeLog: full decision context (the training
+                                        # data every deferred idea is waiting for) ---
+                                        try:
+                                            p_dn = (breach["dn"].predict_one(snap.features)
+                                                    if "dn" in breach else None)
+                                            p_up = (breach["up"].predict_one(snap.features)
+                                                    if "up" in breach else None)
+                                            iv_short = None
+                                            if iv_client is not None:
+                                                from .data.polygon_options import PolygonOptions as _P
+                                                tick = _P.option_ticker(
+                                                    float(spread["short"].strike),
+                                                    "P" if kind == "bull_put" else "C",
+                                                    now.date())
+                                                iv_short = iv_client.current_iv(tick)
+                                            pos["trade_id"] = tradelog.open_trade(
+                                                opened_at=now.isoformat(), kind=kind,
+                                                short_strike=float(spread["short"].strike),
+                                                long_strike=float(spread["long"].strike),
+                                                width=spread["width"], quantity=qty,
+                                                credit_est=spread["credit"], spot=price,
+                                                regime=snap.regime.value,
+                                                ml_prob=decision.ml_prob,
+                                                range_pred=range_pred,
+                                                p_breach_dn=p_dn, p_breach_up=p_up,
+                                                iv_short=iv_short,
+                                                rv_annual=snap.features.get("rv_annual"),
+                                                rvol=snap.rvol, atr_5=snap.atr_5min,
+                                                minutes_into_session=snap.features.get(
+                                                    "minutes_into_session"))
+                                        except Exception as exc:
+                                            log.warning("TradeLog open failed: %s", exc)
                                         alerter.send(
                                             f"OPEN {kind} x{qty} "
                                             f"short={spread['short'].strike:g} "

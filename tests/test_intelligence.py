@@ -123,6 +123,44 @@ def test_event_guard_block_and_widen(tmp_path):
     assert g.check(date(2026, 7, 15)) is None
 
 
+# --- trade log --------------------------------------------------------------------
+def test_trade_log_roundtrip_and_slippage(tmp_path):
+    from src.utils.trade_log import TradeLog
+    tl = TradeLog(tmp_path / "t.db")
+    tid = tl.open_trade(opened_at="2026-07-06T10:00:00", kind="bull_put",
+                        short_strike=743.0, long_strike=738.0, width=5.0, quantity=1,
+                        credit_est=0.40, spot=744.5, regime="chop", ml_prob=0.56,
+                        range_pred=0.0031, p_breach_dn=0.42, p_breach_up=0.38,
+                        iv_short=0.19, rv_annual=0.14, rvol=1.4, atr_5=0.35,
+                        minutes_into_session=45.0)
+    tl.close_trade(tid, closed_at="2026-07-06T11:30:00", exit_reason="take_profit",
+                   exit_cost_est=0.20, exit_cost_fill=0.22, credit_fill=0.38,
+                   pnl=13.40, limit_exit=True)
+    assert tl.count() == 1
+    rep = tl.report()
+    assert "n=1" in rep and "noise" in rep          # honest small-sample warning
+    assert "IV>RV entries" in rep                    # 0.19 > 0.14 bucket populated
+    row = tl._conn.execute("SELECT * FROM trades").fetchone()
+    assert abs(row["entry_slippage"] - 0.02) < 1e-9  # est 0.40 vs fill 0.38
+    assert abs(row["exit_slippage"] - 0.02) < 1e-9   # fill 0.22 vs est 0.20
+    tl.close()
+
+
+def test_consecutive_loss_brake(cfg):
+    from datetime import datetime
+    from src.execution.position_manager import PositionManager
+    pm = PositionManager(cfg)
+    now = datetime(2026, 7, 6, 10, 0)
+    limit = cfg.risk["limits"]["max_consecutive_losses"]
+    for _ in range(limit):
+        pm.record_result(-10.0)
+    ok, why = pm.can_open(now, 100000, 0)            # equity high: daily halt not the cause
+    assert not ok and why == "consecutive_loss_brake"
+    pm.record_result(+5.0)                            # a win resets the brake
+    ok, _ = pm.can_open(now, 100000, 0)
+    assert ok
+
+
 def test_event_guard_missing_and_malformed(tmp_path):
     from datetime import date
     assert EventGuard(tmp_path / "nope.yaml").check(date(2026, 1, 1)) is None

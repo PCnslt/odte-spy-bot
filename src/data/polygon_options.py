@@ -165,6 +165,20 @@ class PolygonOptions:
         df.to_parquet(cache)
         return df
 
+    def current_iv(self, option_ticker: str, underlying: str = "SPY") -> Optional[float]:
+        """Implied volatility of a contract from the LIVE snapshot (Starter-entitled).
+        Present-time only — Polygon has no IV history on this plan, which is exactly why
+        the TradeLog records it at every entry. Returns None if unavailable."""
+        try:
+            resp = self._request(
+                f"{self.base_url}/v3/snapshot/options/{underlying}/{option_ticker}",
+                {"apiKey": self.api_key})
+            iv = (resp.json().get("results") or {}).get("implied_volatility")
+            return float(iv) if iv is not None else None
+        except Exception as exc:
+            log.info("current_iv unavailable for %s: %s", option_ticker, exc)
+            return None
+
     def index_history(self, index_ticker: str, start: date, end: date) -> pd.DataFrame:
         """Real index minute bars, e.g. I:VIX1D (needs an Indices entitlement)."""
         return self._aggs(index_ticker, f"{start:%Y-%m-%d}", f"{end:%Y-%m-%d}")
