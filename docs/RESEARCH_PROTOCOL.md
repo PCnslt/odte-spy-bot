@@ -80,12 +80,37 @@ project before this one. Rules here bind all future research, human- or AI-propo
 - **Live config aligned 2026-07-05** (`spread.stop_mult: 999`) — live paper evidence
   accumulates under the same mechanics the holdout will judge.
 
-### H4 — profit-target A/B (QUEUED — do not start yet)
-- **Design:** PT ∈ {40%, 60%} by the same deterministic hash; two arms only (three is
-  underpowered below n≈200).
+### H4 — profit-target A/B (QUEUED — do not start yet; design finalized R8)
+- **Design:** PT ∈ {40%, 60%} by md5(entry minute); two arms only (three is underpowered
+  below n≈200). Under no-stop mechanics the PT is the dominant exit, so this experiment
+  gained importance.
 - **Start condition:** after H2b concludes (avoid a 2×2 factorial at 2–4 trades/day).
-- **Accept:** an arm wins if its $/trade 95% CI excludes the other arm's mean at n ≥ 50
-  per arm; otherwise PT stays 50%.
+- **Kill criteria:** pause and review if either arm's PF < 0.50 at n ≥ 30.
+- **Accept:** an arm wins if the bootstrap 95% CI of the $/trade difference excludes $0 at
+  n ≥ 50 per arm; otherwise PT stays 50%.
+
+### H6 — width-fraction stop (REGISTERED R8; evidence pending)
+- **Design:** stop when close-cost ≥ 50% of spread width (`spread.stop_width_frac: 0.5`)
+  instead of a credit multiple — caps worst-case at ~half the structural max loss without
+  the 2×-credit whipsaw. Implemented in harness + live path (`stop_cost()`).
+- **Evidence gate:** the 180-day three-arm exit test (2×-credit vs hold-to-target vs H6),
+  whose Jan–Apr folds are fresh, decides whether H6 challenges hold-to-target. If H6 wins
+  there, it may take the SPARE holdout look; live config only changes on that evidence.
+
+## Appendix — Month-1 live evaluation table (adopted R8)
+
+| Metric | v1-ish fills | v3-ish fills | Suspension trigger |
+|---|---|---|---|
+| Entry slippage (est − fill) | ≤ $0.05 | ≥ $0.15 | mean > $0.20 at n ≥ 20 |
+| Exit slippage — limit | ≤ $0.05 | ≥ $0.15 | mean > $0.20 at n ≥ 20 |
+| Exit slippage — market | ≤ $0.10 | ≥ $0.25 | mean > $0.30 at n ≥ 10 |
+| Width A/B interim (n ≥ 20/arm) | $10 − $5 ≥ $0.50/trade | within ±$0.30 | $10 maxDD > 2× $5 maxDD |
+| PT-hit rate (no-stop, n ≥ 30) | ≥ 70% | ≤ 50% | < 40% at n ≥ 20 |
+| Daily loss halts | ≤ 1/month | ≥ 2/month | ≥ 3/month or 2 consecutive |
+
+Decision rules: persistent entry slippage > $0.15 → tighten the liquidity gate; limit-exit
+slippage worse than market → disable `limit_exits`; width A/B flat at n ≥ 50/arm → kill the
+experiment, default $5.
 
 ## 4. Standing rules
 

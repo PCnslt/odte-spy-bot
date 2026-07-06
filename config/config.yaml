@@ -49,6 +49,10 @@ spread:
   # 82%, robust across fill models). 999 = hold to profit-target/time/flatten; risk stays
   # DEFINED by construction (max loss = width - credit; sl_cost is capped at width).
   stop_mult: 999.0
+  # H6 candidate (R8): stop at a fraction of spread WIDTH instead of a credit multiple
+  # (e.g. 0.5 => exit when closing costs $2.50 on a $5 spread). null = disabled; the
+  # 180-day three-arm test + holdout decide whether this replaces hold-to-target.
+  stop_width_frac: null
   min_credit: 0.10           # skip if the net credit is below this (not worth the risk/fees)
   # Spreads need TIME for theta to work — do not inherit the scalper's 10-min time stop.
   max_hold_minutes: 240      # hold up to this long (still flattened before the close)

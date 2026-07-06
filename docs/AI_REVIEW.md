@@ -323,6 +323,27 @@ Five-arm matrix, v3 harness, $5 width, same window (runs are DIAGNOSTIC, not var
 4. Window-wear count after diagnostics: ~19 looks. The 90-day window is retired for
   anything but sanity checks; evidence now comes from the TradeLog and (once) the holdout.
 
+---
+
+# Round 8 — DeepSeek engages properly; dispositions (2026-07-05)
+
+Round 8 answered the questions directly — its best round. Dispositions:
+
+| Item | Verdict | Action |
+|---|---|---|
+| Q1 steelman vs no-stop (calm-regime bias, pessimistic-fill amplification, survivor composition) | **Good critique, accepted** | Its proposed check executed: three-arm exit test over 180 days — the Jan–Apr 2026 folds were never OOS-judged (fresh window). Results below. |
+| Q2 tail arithmetic + **H6: stop at 50% of width** | Coherent, testable | `stop_width_frac` implemented (config + harness + live path, `stop_cost()` helper); H6 arm included in the 180-day test; registered in the protocol pending that evidence. |
+| Q3 H4 redesign (40%/60% PT, n≥50/arm, kill at PF<0.5@n≥30, start after H2b) | Accepted | Protocol H4 updated. |
+| Q4 cost-lever ranking | Mostly sound | Its "novel" bounce-point lever ≈ limit-at-mid (already live). Its claim that delayed data is irrelevant is WRONG for quotes-first exits — 15-min-delayed quotes pricing stop decisions is a real gap; flagged to the operator (real-time IBKR data ≈ $5/mo). |
+| Q5 month-1 decision table | Accepted | Adopted into the protocol (appendix) with its thresholds. |
+| Q6 #1 stale-bar exit fallback | **Confirmed** | Freshness guard: fallback bars older than 180 s → poll skipped. |
+| Q6 #2 rv_60m mixes sessions near the open | **Confirmed** | rv_60m now computed from TODAY's bars only. |
+| Q6 #3 searchsorted index mismatch | **REBUTTED** | `idx_utc` IS `bars.index` (spreads.py assigns it directly); `exit_ts` is a tz-aware Timestamp and `DatetimeIndex.searchsorted` is unit-aware — that was precisely the round-5 fix. No two indices exist. |
+| Q6 #4 migration drift | Observational | Policy comment added; no action. |
+| Q6 #5 fill-below-estimate raises max loss vs sized risk | **Valid but a no-op today** | qty is pinned at 1; P&L already uses actual fills (`spread_fill_status` updates credit). Revisit when sizing unpins (~5× equity). |
+| Q6 #6 interrupt orphan gap | Partially valid (its expiry scenario confused; shorts expiring OTM is fine) | Kept the useful part: post-drain `flatten_orphans()` sweep on interrupt + `--flatten` recovery CLI. |
+| Exploratory liquidity-gate/entry-window sweeps | **Deferred** | More window looks for effects the TradeLog will measure for free with real fills. Wait for n≥100. |
+
 ## Risk assessment of the adopted design (no bullshit)
 
 - **The range model can be wrong at exactly the wrong time.** Vol forecasts fail hardest

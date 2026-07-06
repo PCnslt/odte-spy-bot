@@ -183,6 +183,13 @@ class IBKRFeed:
             bars = self._hist(opt, "1 D", "1 min")
             if bars.empty:
                 return None
+            # R8 #1: a stale last print must not price an exit decision. If the leg
+            # hasn't traded within 3 minutes, this poll is unpriceable — skip it.
+            age_s = (pd.Timestamp.now(tz="UTC") - bars.index[-1]).total_seconds()
+            if age_s > 180:
+                log.info("spread_close_cost: %s last bar %.0fs old — skipping poll.",
+                         opt.localSymbol, age_s)
+                return None
             costs.append(float(bars["close"].iloc[-1]))
         return costs[0] - costs[1]
 

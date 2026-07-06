@@ -54,6 +54,19 @@ class RiskCalculator:
 
 
 # --- credit-spread decision helpers (pure, unit-tested) ---------------------------
+def stop_cost(credit: float, width: float, stop_mult: float,
+              width_frac: float | None = None) -> float:
+    """The close-cost level at which the spread is stopped.
+
+    Two regimes (R8, H6): width_frac set -> stop at that fraction of the spread WIDTH
+    (structural stop, independent of the credit collected — e.g. 0.5 x $5 = $2.50);
+    else the legacy credit-multiple stop, capped at width (999 = hold-to-target, since
+    the vertical's construction already caps loss at width)."""
+    if width_frac is not None:
+        return min(max(width_frac, 0.0), 1.0) * width
+    return min(credit * stop_mult, width)
+
+
 def gap_exceeds(gap: float | None, threshold_pct: float) -> bool:
     """Opening-gap guard predicate. None (gap unknown) -> False: don't block on missing
     telemetry, the anomaly detector still protects intraday."""

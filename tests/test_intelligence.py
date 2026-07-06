@@ -181,6 +181,20 @@ def test_event_guard_block_and_widen(tmp_path):
     assert g.check(date(2026, 7, 15)) is None
 
 
+# --- stop-cost regimes (R8 / H6) -----------------------------------------------------
+def test_stop_cost_regimes():
+    from src.execution.risk import stop_cost
+    # Legacy credit-multiple stop, capped at width.
+    assert stop_cost(0.50, 5.0, 2.0) == 1.00
+    assert stop_cost(4.00, 5.0, 2.0) == 5.00          # cap at width
+    # Hold-to-target: 999x credit == width cap == structural max loss.
+    assert stop_cost(0.50, 5.0, 999.0) == 5.00
+    # H6 width-fraction stop overrides the multiple entirely.
+    assert stop_cost(0.50, 5.0, 999.0, width_frac=0.5) == 2.50
+    assert stop_cost(2.00, 10.0, 2.0, width_frac=0.5) == 5.00
+    assert stop_cost(0.50, 5.0, 2.0, width_frac=1.5) == 5.00   # frac clamped to [0,1]
+
+
 # --- gap guard + experiment arms ---------------------------------------------------
 def test_gap_exceeds():
     from src.execution.risk import gap_exceeds

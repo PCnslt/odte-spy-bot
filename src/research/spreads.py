@@ -31,7 +31,7 @@ from ..signals.range_model import RangeForecaster, dynamic_short_otm
 from ..signals.regime_classifier import classify_regime
 from ..signals.signal_generator import SignalGenerator
 from ..execution.position_manager import PositionManager
-from ..execution.risk import defense_triggered, spread_ev
+from ..execution.risk import defense_triggered, spread_ev, stop_cost
 from ..utils.config import load_config
 from ..utils.logger import get_logger
 
@@ -229,7 +229,8 @@ def simulate(cfg, bars, features, probs, poly, include_vix, allow_dates=None,
 
         exit_cost, reason, exit_ts = None, None, entry_bar_ts
         tp_cost = credit * (1 - pt)
-        sl_cost = min(credit * stop_mult, spread["width"])
+        sl_cost = stop_cost(credit, spread["width"], stop_mult,
+                            cfg.spread.get("stop_width_frac"))
         spy_close = bars["close"]
         buffer_pct = cfg.intelligence.get("defense_buffer_pct", 0.001)
         for ots, row in walk.iterrows():

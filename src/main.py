@@ -24,7 +24,7 @@ from .data.ibkr_feed import IBKRFeed
 from .execution.ibkr_broker import IBKRBroker
 from .execution.position_manager import PositionManager
 from .execution.risk import (assign_arm, defense_triggered, gap_exceeds, liquidity_ok,
-                             spread_ev)
+                             spread_ev, stop_cost)
 from .learning.anomaly_detector import AnomalyAction, AnomalyDetector
 from .learning.evaluator import PerformanceMonitor
 from .signals.lightgbm_model import DirectionalClassifier
@@ -295,7 +295,8 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
             if cost is None:
                 continue
             tp_cost = credit * (1 - pt_frac)
-            sl_cost = min(credit * stop_mult, pos["spread"]["width"])
+            sl_cost = stop_cost(credit, pos["spread"]["width"], stop_mult,
+                                sp.get("stop_width_frac"))
             reason = None
             if force:
                 reason = "flatten"
@@ -496,7 +497,12 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                                                     now.date())
                                                 iv_short = iv_client.current_iv(tick)
                                             # Trailing 60-min realized vol (H1's RV term).
-                                            r60 = bars["close"].pct_change().tail(60)
+                                            # R8 #2: TODAY's session only — near the open,
+                                            # tail(60) would mix in yesterday's bars and
+                                            # the overnight gap, contaminating RV.
+                                            _et = bars.index.tz_convert("America/New_York")
+                                            _today = bars[_et.date == now.date()]
+                                            r60 = _today["close"].pct_change().tail(60)
                                             rv_60m = (float(r60.std()) * (252 * 390) ** 0.5
                                                       if len(r60.dropna()) >= 30 else None)
                                             pos["trade_id"] = tradelog.open_trade(
@@ -538,8 +544,14 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
             _time.sleep(2)
             _manage_spreads(datetime.now(), force=True)
         if open_spreads:
-            log.warning("%d close(s) unconfirmed at interrupt; next session's orphan "
-                        "reconciliation will catch any remainder.", len(open_spreads))
+            # R8 #6: don't leave it to tomorrow — sweep actual account legs now.
+            log.warning("%d close(s) unconfirmed at interrupt; sweeping orphans.",
+                        len(open_spreads))
+            try:
+                broker.flatten_orphans()
+            except Exception as exc:
+                log.error("Orphan sweep failed: %s — run `python -m src.main --flatten`.",
+                          exc)
     finally:
         rep = monitor.report()
         alerter.send(f"Session end: {rep.pretty()}")
@@ -558,6 +570,8 @@ def main() -> None:
                         help="validate the IBKR live path (no orders placed) and exit")
     parser.add_argument("--healthcheck", action="store_true",
                         help="authenticated Gateway check for schedulers; exit 0/1")
+    parser.add_argument("--flatten", action="store_true",
+                        help="recovery: close ALL option positions in the account and exit")
     args = parser.parse_args()
 
     cfg = load_config()
@@ -566,6 +580,13 @@ def main() -> None:
         raise SystemExit("Refusing live mode: set execution.live_confirmed: true in config first.")
     if args.healthcheck:
         raise SystemExit(0 if healthcheck(cfg, mode) else 1)
+    if args.flatten:
+        broker = IBKRBroker(cfg, mode=mode)
+        broker.connect()
+        n = broker.flatten_orphans()
+        broker.disconnect()
+        print(f"Flattened {n} position(s).")
+        raise SystemExit(0)
     if args.selftest:
         raise SystemExit(0 if selftest(cfg, mode) else 1)
     run(cfg, mode, once=args.once, daily=args.daily)
