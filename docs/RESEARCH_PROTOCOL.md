@@ -89,13 +89,16 @@ project before this one. Rules here bind all future research, human- or AI-propo
 - **Accept:** an arm wins if the bootstrap 95% CI of the $/trade difference excludes $0 at
   n ≥ 50 per arm; otherwise PT stays 50%.
 
-### H6 — width-fraction stop (REGISTERED R8; evidence pending)
-- **Design:** stop when close-cost ≥ 50% of spread width (`spread.stop_width_frac: 0.5`)
-  instead of a credit multiple — caps worst-case at ~half the structural max loss without
-  the 2×-credit whipsaw. Implemented in harness + live path (`stop_cost()`).
-- **Evidence gate:** the 180-day three-arm exit test (2×-credit vs hold-to-target vs H6),
-  whose Jan–Apr folds are fresh, decides whether H6 challenges hold-to-target. If H6 wins
-  there, it may take the SPARE holdout look; live config only changes on that evidence.
+### H6 — width-fraction stop (REGISTERED R8 → **REJECTED 2026-07-05**)
+- **Design:** stop when close-cost ≥ 50% of spread width, instead of a credit multiple.
+- **Evidence (three-arm test, pre-committed rules R1–R4, fresh Jan–Apr folds):** H6 was
+  the WORST arm (−$15.07/trade fresh vs hold-to-target −$8.57 and 2×-stop −$11.85).
+  Per rule R2 it does not take the spare holdout look; live config unchanged
+  (hold-to-target retained per R1). Implementation retained behind
+  `spread.stop_width_frac: null` for future regimes; do not enable without new evidence.
+- **Effect-size honesty:** the fresh window also shrank the no-stop advantage to
+  +$3.28/trade (from +$7.96 on the retired window) — sign stable, magnitude was
+  calm-window-inflated. H5's holdout prior is correspondingly weaker.
 
 ## Appendix — Month-1 live evaluation table (adopted R8)
 

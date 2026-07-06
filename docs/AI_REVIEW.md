@@ -344,6 +344,32 @@ Round 8 answered the questions directly — its best round. Dispositions:
 | Q6 #6 interrupt orphan gap | Partially valid (its expiry scenario confused; shorts expiring OTM is fine) | Kept the useful part: post-drain `flatten_orphans()` sweep on interrupt + `--flatten` recovery CLI. |
 | Exploratory liquidity-gate/entry-window sweeps | **Deferred** | More window looks for effects the TradeLog will measure for free with real fills. Wait for n≥100. |
 
+## R8 appendix — the three-arm exit test (fresh-window verdict, 2026-07-05)
+
+Decision rules R1–R4 were pre-committed in writing BEFORE results existed (see round-9
+prompt). 180 days, 21 folds; "fresh" = Jan–Apr 2026 test folds never used in any prior OOS
+judgment. Disclosure: per-fold PF was not recoverable from run logs, so R1/R2 were applied
+on segment $/trade + pooled PF — which agree unambiguously.
+
+| Arm | Fresh tr | Fresh win | Fresh $/tr | Pooled PF |
+|---|---|---|---|---|
+| A. 2× credit stop | 111 | 61.1% | −$11.85 | 0.59 |
+| B. hold-to-target (live) | 87 | **78.1%** | **−$8.57** | **0.69** |
+| C. H6 50%-of-width stop | 93 | 74.3% | −$15.07 | 0.61 |
+
+**Rulings:** R1 → hold-to-target RETAINED (beats 2×-stop on fresh data on every metric).
+R2 → **H6 REJECTED** — worst arm on fresh folds; it does not take the spare holdout look;
+live config unchanged. R3/R4 not triggered.
+
+**Scorekeeping both ways:** DeepSeek's H6 failed empirically, but its steelman of the
+no-stop effect was substantially right — the advantage shrank from +$7.96/trade (retired
+window) to **+$3.28/trade (fresh)**: sign stable, magnitude inflated by the calm window,
+within its predicted 0.05–0.10 PF haircut. Consequence: **H5's holdout prior weakens** —
+at fresh-window expectancy (−$8.57/trade historical-harness), PF > 1.00 on the holdout is
+unlikely unless live fills prove materially better than v3's pessimistic model. H5 stays
+scheduled (after ≥1 month of live A/B) per protocol; the TradeLog's est-vs-fill data is
+now decisive for whether the strategy family survives at all.
+
 ## Risk assessment of the adopted design (no bullshit)
 
 - **The range model can be wrong at exactly the wrong time.** Vol forecasts fail hardest
