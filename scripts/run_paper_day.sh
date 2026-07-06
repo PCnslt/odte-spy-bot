@@ -3,7 +3,9 @@
 # (see deploy/com.pcnslt.odte-spy-bot.plist). Exits after the close via --daily.
 set -u
 
-REPO="/Users/pcnslt/Library/Mobile Documents/com~apple~CloudDocs/Claude/odte-spy-bot"
+# Repo root derived from this script's location — the runtime deployment MUST live outside
+# iCloud Drive (launchd cannot read Mobile Documents; discovered the hard way, self-audit R6).
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 1
 
 mkdir -p logs

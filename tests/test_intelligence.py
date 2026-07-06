@@ -114,6 +114,20 @@ def test_labels_never_cross_session_boundary():
         assert not valid.iloc[-H:].any()
 
 
+# --- RTH filter (self-audit R6: train/serve distribution match) ---------------------
+def test_rth_only_strips_extended_hours():
+    import pandas as pd
+    from src.data.data_pipeline import _rth_only
+    # 08:00–20:00 ET on one day = 12h of minutes; RTH keeps 09:30–15:59 (390 rows).
+    idx = pd.date_range("2026-06-01 12:00", periods=720, freq="1min", tz="UTC")  # 08:00 ET
+    df = pd.DataFrame({"close": range(720)}, index=idx)
+    out = _rth_only(df)
+    assert len(out) == 390
+    et = out.index.tz_convert("America/New_York")
+    assert et.min().strftime("%H:%M") == "09:30"
+    assert et.max().strftime("%H:%M") == "15:59"
+
+
 # --- cache completeness guard (audit C2) --------------------------------------------
 def test_day_is_complete_and_cache_fresh(tmp_path):
     from datetime import date, datetime, timedelta

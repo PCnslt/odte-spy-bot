@@ -21,6 +21,15 @@
         <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>25</integer></dict>
     </array>
 
+    <!-- Crash-only restart (self-audit R6): a clean --daily exit (status 0) ends the day;
+         a crash (non-zero) relaunches the runner, whose startup reconciliation flattens
+         any orphaned positions before resuming. -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
     <key>StandardOutPath</key>
     <string>/Users/pcnslt/Library/Mobile Documents/com~apple~CloudDocs/Claude/odte-spy-bot/logs/launchd.out</string>
     <key>StandardErrorPath</key>

@@ -172,6 +172,13 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
     broker = IBKRBroker(cfg, mode=mode)
     broker.connect()
 
+    # Crash recovery (self-audit R6): positions in the account that this process didn't
+    # open are unmanaged 0DTE risk — flatten them immediately, fail closed.
+    n_orphans = broker.flatten_orphans()
+    if n_orphans:
+        alerter.send(f"RECOVERY: flattened {n_orphans} orphaned option position(s) from a "
+                     f"prior crash.", level="WARN")
+
     siggen = SignalGenerator(cfg)
     pm = PositionManager(cfg)
     monitor = PerformanceMonitor()
@@ -250,22 +257,29 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
 
     def _manage_spreads(now, spot: float | None = None, force: bool = False) -> None:
         for pos in list(open_spreads):
-            # --- pending limit close: check fill / escalate ---
+            # --- pending close (limit OR market): capture the ACTUAL fill (self-audit R6:
+            # H3 needs real market-exit fills, not estimates) ---
             if pos.get("close_trade") is not None:
                 done, actual_cost = broker.close_fill(pos)
                 if done:
                     _record_close(pos, actual_cost if actual_cost is not None
                                   else pos["close_cost"], pos["close_reason"], now,
-                                  exit_cost_est=pos["close_cost"], limit_exit=True)
+                                  exit_cost_est=pos["close_cost"],
+                                  limit_exit=not pos.get("close_market", False))
                     open_spreads.remove(pos)
+                elif pos.get("close_market", False):
+                    # Market order not confirmed after 90s: record the estimate, warn.
+                    if (now - pos["close_since"]).total_seconds() > 90:
+                        log.warning("Market close unconfirmed after 90s; recording estimate.")
+                        _record_close(pos, pos["close_cost"], pos["close_reason"], now,
+                                      exit_cost_est=pos["close_cost"], limit_exit=False)
+                        open_spreads.remove(pos)
                 elif force or ((now - pos["close_since"]).total_seconds()
                                > intel.get("limit_exit_escalate_s", 120)):
-                    broker.escalate_close(pos)
-                    cost_now = feed.spread_close_cost(pos["spread"])
-                    _record_close(pos, cost_now if cost_now is not None
-                                  else pos["close_cost"], pos["close_reason"], now,
-                                  exit_cost_est=pos["close_cost"], limit_exit=False)
-                    open_spreads.remove(pos)
+                    # Escalate limit -> market, but keep tracking to capture the real fill.
+                    pos["close_trade"] = broker.escalate_close(pos)
+                    pos["close_market"] = True
+                    pos["close_since"] = now
                 continue
 
             filled, credit = broker.spread_fill_status(pos)
@@ -309,9 +323,14 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                         pos.update(close_trade=tr, close_since=now,
                                    close_reason=reason, close_cost=cost)
                         continue  # fill/escalation handled on subsequent polls
-                broker.close_credit_spread(pos)
-                _record_close(pos, cost, reason, now)
-                open_spreads.remove(pos)
+                # Urgent path: market order, but STILL track it to record the actual fill
+                # (self-audit R6: without this, H3 has no real market-exit data).
+                tr = broker.close_credit_spread(pos)
+                if tr is not None:
+                    pos.update(close_trade=tr, close_since=now, close_reason=reason,
+                               close_cost=cost, close_market=True)
+                else:  # entry was never filled; nothing to unwind
+                    open_spreads.remove(pos)
 
     alerter.send(f"Bot starting: IBKR {mode} on port {port} — CREDIT SPREADS "
                  f"(width ${sp.width}, PT {pt_frac:.0%}, stop {stop_mult}x)")
@@ -515,6 +534,12 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
     except KeyboardInterrupt:
         log.info("Interrupted; flattening.")
         _manage_spreads(datetime.now(), force=True)
+        for _ in range(4):  # brief drain so market closes record their actual fills
+            _time.sleep(2)
+            _manage_spreads(datetime.now(), force=True)
+        if open_spreads:
+            log.warning("%d close(s) unconfirmed at interrupt; next session's orphan "
+                        "reconciliation will catch any remainder.", len(open_spreads))
     finally:
         rep = monitor.report()
         alerter.send(f"Session end: {rep.pretty()}")

@@ -218,15 +218,17 @@ class IBKRBroker(Broker):
         log.info("Spread close (market) sent x%d", pos["quantity"])
         return trade
 
-    def escalate_close(self, pos: dict) -> None:
-        """Cancel an unfilled limit close and exit at market instead."""
+    def escalate_close(self, pos: dict):
+        """Cancel an unfilled limit close and exit at market instead. Returns the market
+        Trade so the caller can keep tracking the ACTUAL fill (H3 instrumentation)."""
         from ib_insync import MarketOrder
 
         ct = pos.get("close_trade")
         if ct is not None and ct.orderStatus.status not in ("Filled", "Cancelled"):
             self.ib.cancelOrder(ct.order)
-        self.ib.placeOrder(pos["combo"], MarketOrder("SELL", pos["quantity"]))
+        trade = self.ib.placeOrder(pos["combo"], MarketOrder("SELL", pos["quantity"]))
         log.info("Limit close escalated to market x%d", pos["quantity"])
+        return trade
 
     @staticmethod
     def close_fill(pos: dict) -> tuple[bool, Optional[float]]:
@@ -256,6 +258,33 @@ class IBKRBroker(Broker):
             pos["_fill_logged"] = True
         credit = abs(st.avgFillPrice) if filled and st.avgFillPrice else pos["credit"]
         return filled, credit
+
+    # --- orphan reconciliation (self-audit R6: crash recovery) ----------------------
+    def orphan_positions(self) -> list:
+        """Real option positions sitting in the account that THIS process has no record of
+        (e.g. after a mid-session crash). Anything here is unmanaged risk."""
+        out = []
+        for p in self.ib.positions():
+            c = p.contract
+            if getattr(c, "secType", "") == "OPT" and c.symbol == self.cfg.symbol \
+                    and p.position:
+                out.append(p)
+        return out
+
+    def flatten_orphans(self) -> int:
+        """Fail-closed: close every orphaned option leg at market. An unmanaged 0DTE
+        position is strictly worse than a realized exit."""
+        from ib_insync import MarketOrder
+
+        orphans = self.orphan_positions()
+        for p in orphans:
+            c = p.contract
+            c.exchange = c.exchange or self.exchange
+            action = "SELL" if p.position > 0 else "BUY"
+            self.ib.placeOrder(c, MarketOrder(action, abs(int(p.position))))
+            log.warning("ORPHAN flattened: %s %s x%d", action, c.localSymbol,
+                        abs(int(p.position)))
+        return len(orphans)
 
     def disconnect(self) -> None:
         if self.ib is not None:

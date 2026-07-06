@@ -32,6 +32,18 @@ def _date_range(days: int) -> tuple[date, date]:
     return start, end
 
 
+def _rth_only(df: pd.DataFrame) -> pd.DataFrame:
+    """Regular trading hours only (09:30–16:00 ET). Self-audit R6: Polygon aggregates
+    include pre/after-hours bars, but the LIVE feed (IBKR, useRTH=True) never sees them —
+    training on extended-hours rows creates a train/serve distribution mismatch, and label
+    windows could include after-hours moves the strategy can never trade."""
+    if df.empty or not isinstance(df.index, pd.DatetimeIndex) or df.index.tz is None:
+        return df
+    et = df.index.tz_convert("America/New_York")
+    minutes = et.hour * 60 + et.minute
+    return df[(minutes >= 9 * 60 + 30) & (minutes < 16 * 60)]
+
+
 def load_bars(cfg, days: int, download: bool = False,
               poly: PolygonOptions | None = None) -> pd.DataFrame:
     """Real SPY minute bars over the last `days`, with a real `vix` column when entitled."""
@@ -42,7 +54,7 @@ def load_bars(cfg, days: int, download: bool = False,
     # Same-day partial-session guard (audit C2): only serve/write caches whose final day
     # was complete at write time.
     if not download and cache.exists() and _cache_fresh(cache, end):
-        return pd.read_parquet(cache)
+        return _rth_only(pd.read_parquet(cache))
 
     spy = poly.stock_history(start, end, symbol=cfg.symbol)
     if spy.empty:
@@ -60,8 +72,8 @@ def load_bars(cfg, days: int, download: bool = False,
             log.warning("VIX unavailable (%s). Proceeding without VIX features. %s",
                         vix_symbol, exc)
     if _day_is_complete(end):
-        spy.to_parquet(cache)
-    return spy
+        spy.to_parquet(cache)  # cache stays raw; the RTH filter applies on the way out
+    return _rth_only(spy)
 
 
 def has_vix(bars: pd.DataFrame) -> bool:
