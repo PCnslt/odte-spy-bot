@@ -49,4 +49,10 @@ if ! "$REPO/venv/bin/python" -m src.main --healthcheck --mode paper; then
 fi
 
 # caffeinate -i: keep the Mac from idle-sleeping while the session runs.
-exec caffeinate -i "$REPO/venv/bin/python" -m src.main --mode paper --daily
+caffeinate -i "$REPO/venv/bin/python" -m src.main --mode paper --daily
+rc=$?
+
+# End-of-day evidence summary: every session closes with the TradeLog report.
+echo "=== $(date) TradeLog report ==="
+"$REPO/venv/bin/python" -m src.utils.trade_log --db "$REPO/trades.db" || true
+exit $rc
