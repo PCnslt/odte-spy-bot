@@ -1,6 +1,8 @@
 # SYSTEM.md — Complete System Reference
 
-*Snapshot: 2026-07-05. The authoritative what/why/how of the odte-spy-bot system as deployed.*
+*Snapshot: 2026-07-05 (post rounds 1–3 of external AI review). The authoritative what/why/how
+of the odte-spy-bot system as deployed. Companion: `docs/AI_REVIEW.md` — the full record of
+every proposed upgrade, its out-of-sample test, and its disposition.*
 
 ---
 
@@ -72,8 +74,10 @@ src/
 │   └── data_pipeline.py    Download/cache real bars, training-set assembly, snapshots
 ├── signals/
 │   ├── feature_engineering.py  19 causal features (21 w/ VIX); no look-ahead
-│   ├── labeling.py             Magnitude-aware directional labels (triple-barrier-lite)
+│   ├── labeling.py             Directional labels + range labels (forward max excursion)
+│   │                           + breach labels (P(adverse move ≥ strike distance))
 │   ├── lightgbm_model.py       DirectionalClassifier: walk-forward split, persistence
+│   ├── range_model.py          RangeForecaster (regression) + strike-placement helpers
 │   ├── regime_classifier.py    Transparent threshold regime tags (no black box)
 │   ├── sentiment_analyzer.py   Optional FinBERT (off by default; degrades to neutral)
 │   └── signal_generator.py     Fuses rules + ML + regime (+ sentiment veto) → Signal
@@ -89,14 +93,18 @@ src/
 │   └── self_corrector.py    Bounded, audited parameter nudges (governor, not optimizer)
 ├── research/
 │   ├── walkforward.py       Rolling train/test OOS harness (single-leg)
-│   └── spreads.py           CREDIT-SPREAD backtester + walk-forward (real legs)
+│   └── spreads.py           CREDIT-SPREAD backtester + walk-forward (real legs);
+│                            --smart (range strikes + defense) and --ev (EV gate) arms
 └── utils/                   config (3 YAMLs + .env), JSON logging, SQLite memory
-                             (time-gate + whipsaw guards), Telegram alerts (optional)
+                             (time-gate + whipsaw guards), TradeLog (per-trade decision
+                             context + fills → trades.db), EventGuard (events.yaml),
+                             Telegram alerts (optional)
 ```
 
-Config: `config/config.yaml` (session, signal, spread, IBKR ports), `risk_params.yaml`
-(sizing/limits/commissions), `model_params.yaml` (labels/LightGBM). Secrets in `.env`
-(gitignored). Everything testable: **23 pytest tests**, run in CI on every push.
+Config: `config/config.yaml` (session, signal, spread, intelligence flags, IBKR ports),
+`risk_params.yaml` (sizing/limits/commissions/brakes), `model_params.yaml` (labels/LightGBM),
+`events.yaml` (FOMC/CPI calendar, manually maintained). Secrets in `.env` (gitignored).
+Everything testable: **35 pytest tests**, run in CI on every push.
 
 ---
 
@@ -112,10 +120,15 @@ Per 30-second poll during 09:30–15:30 ET:
    within 10 minutes). Trained nightly on the trailing 30 days; walk-forward validated;
    the retrainer keeps the old model unless the new one scores better on holdout.
 2b. **Range forecaster (the spread-seller's real target)**: LightGBM *regression*
-   predicting the forward 60-minute maximum excursion of SPY (fraction of spot). Drives
-   strike placement and entry skips. Retrained nightly with an only-if-better MAE gate.
-   Fallback when absent: ATR-scaled √time estimate. (Rationale + rejected alternatives:
-   `docs/AI_REVIEW.md` — direction has almost no learnable structure, range does.)
+   predicting the forward 60-minute maximum excursion of SPY (fraction of spot). Retrained
+   nightly with an only-if-better MAE gate. Fallback when absent: ATR-scaled √time estimate.
+   Notable: on identical features, the direction target fits in ~14 boosting rounds (nearly
+   nothing to learn) vs ~119 for range — volatility is forecastable, direction mostly isn't.
+   Currently used for **telemetry** (logged on every entry); strike placement from it is
+   implemented but default-OFF (failed OOS — see §7).
+2c. **Breach classifiers**: two LightGBM binary models, P(spot reaches the short strike
+   within 120 min), down-side and up-side. Power the EV gate (default-OFF after failing
+   OOS) and are logged per trade for future evaluation. Also retrained nightly, gated.
 3. **Regime tag**: VOLATILE / TREND_UP / TREND_DOWN / CHOP from ATR + EMA slope + realized
    vol thresholds (transparent, inspectable).
 4. **Decision** (`SignalGenerator`):
@@ -163,11 +176,23 @@ contract; hard cap 5 contracts; minimum 1.
 | Time stop | Close after 240 minutes (theta needs hours, not 10 minutes) |
 | Session flatten | Everything closed at 15:55 ET, no exceptions |
 | Anomaly halt | 3σ 1-min price shock → flatten + pause |
-Closes are market combo orders (guaranteed exit; fill-quality measurement is a goal of
-the paper phase).
+
+**Exit execution (limit-first):** non-urgent closes (profit target / time stop) place a
+LIMIT combo at the current mid and escalate to market after 120 s unfilled; stops, defense,
+and flatten are always market. Attacks the documented cost frontier; measured by the
+TradeLog's est-vs-fill slippage columns on every close.
+
+**Entry-quality gates (all fail-safe):** liquidity gate (sum of leg half-spreads ≤ 25% of
+credit, from real quotes), event guard (`events.yaml`), EV gate (**default OFF** — see §7),
+min-credit $0.10.
 
 **Daily guardrails:** max 4 trades/day; max 1 concurrent position; hard halt for the day
-at −2% account P&L; no new entries after 15:30.
+at −2% account P&L; **consecutive-loss brake** (6 straight losses across days → pause
+entries; resets on any win); no new entries after 15:30.
+
+**Sizing reality check:** at $10k equity, 2% risk (~$200) is below one contract's max loss
+(~$450) — **quantity is pinned at 1 on every trade**. Any sizing-based intelligence is a
+no-op until equity grows ~5×; proposals in that space are rejected on arithmetic.
 
 ## 6. Risk & safety systems
 
@@ -182,33 +207,63 @@ at −2% account P&L; no new entries after 15:30.
 - **Ops fail-safes**: runner script aborts loudly if Gateway port is down; `--daily` exits
   only when flat; Gateway auto-restarts nightly; weekend guard.
 
-## 7. Research record (the honest history — do not forget this)
+## 7. Research record — the complete gauntlet (do not forget this)
 
-All results are **walk-forward out-of-sample on real option prices**, fills crossing the
-spread + $0.65/contract commissions:
+All results are **walk-forward out-of-sample on real option prices** (per-fold models see
+only their training window), fills crossing the spread + $0.65/contract commissions.
+Same 90-day window (62 trading days, 9 folds) for all spread variants.
 
-| Strategy variant | OOS trades | Win | PF | $/trade | Verdict |
-|---|---|---|---|---|---|
-| Long premium (buy calls/puts) | 292 | 33.9% | 0.58 | −$32.95 | **Structural loser. Removed.** |
-| Credit spreads, 10-min stop | 134 | 40.3% | 0.54 | −$5.26 | Wrong exit design |
-| **Credit spreads, 240-min theta hold** | **107** | **63.6%** | **0.94** | **−$1.04** | **Near break-even; gross-positive before commissions** |
+| # | Variant | Trades | Win | PF | $/trade | Verdict |
+|---|---|---|---|---|---|---|
+| — | Long premium (buy calls/puts), 5 months | 292 | 33.9% | 0.58 | −$32.95 | **Structural loser. Removed from live.** |
+| — | Credit spreads, 10-min scalper stop | 134 | 40.3% | 0.54 | −$5.26 | Wrong exit design for theta |
+| 0 | **Credit spreads, 240-min theta hold (BASELINE)** | **107** | **63.6%** | **0.94** | **−$1.04** | **Best known config. Deployed.** |
+| 1 | + range-forecast strike placement | 105 | 62.9% | 0.84 | −$2.17 | OFF — costs expectancy in calm regimes (does trim maxDD) |
+| 2 | + strike-defense exit | 124 | 44.4% | 0.50 | −$10.58 | OFF — whipsaw machine near 0.2%-OTM strikes |
+| 3 | + both (1+2) | 106 | 61.3% | 0.77 | −$3.25 | OFF |
+| 4 | + EV gate v1 (width-based loss) | 0 | — | — | — | Bug-as-lesson: loss-given-breach under a 2× stop ≈ 1× credit, **not** width; blocked 100% of entries |
+| 5 | + EV gate v2 (exit-structure EV) | 53 | 60.4% | 0.70 | −$5.69 | OFF — gate kept the WORSE half; breach probs don't rank trade quality on this window |
 
-Interpretation: the sell side is structurally right; the residual loss ≈ transaction
-costs (4 legs × $0.65 + crossing spreads). **The open question is fill quality**, which
-is exactly what the live paper phase measures with real IBKR combo fills at the spread's
-own bid/ask. Bugs found & fixed by this research: 5-min breakout including the current
-bar; parquet µs-vs-ns index mismatch silently killing all but one trade; ML thresholds
-set above the model's reachable maximum.
+**Tally: 6 plausible strategy ideas tested (plus 2 rejected on arithmetic/data grounds
+without testing), 0 survived.** Every surviving change is cost-avoidance mechanics:
+liquidity gate, quote-mid entries, limit-first exits, event guard.
+
+Interpretation: the sell side is structurally right; the residual loss ≈ transaction costs
+(4 legs × $0.65 + crossing spreads); gross expectancy before commissions is slightly
+positive. **The open question is fill quality**, which the live paper phase measures with
+real IBKR combo fills. Bugs found & fixed by this research: 5-min breakout including the
+current bar; parquet µs-vs-ns index mismatch silently killing all but one trade; ML
+thresholds set above the model's reachable maximum; width-based EV mis-modeling
+loss-given-breach.
+
+**Known validity caveat:** the same 90-day OOS window has now judged ~8 experiments. Its
+p-values are eroding (multiple comparisons); treat further reuse skeptically. Fresh
+evidence comes from (a) the live TradeLog and (b) extending history within the 2-year data
+entitlement.
+
+## 7b. Instrumentation doctrine (added round 3)
+
+Proposals that need data the system doesn't have are neither accepted nor rejected — they
+are **instrumented**. The TradeLog (`trades.db`) records, for every live trade: decision
+context (regime, ML prob, range forecast, breach probabilities, short-leg IV from a live
+Polygon snapshot, realized vol, RVOL/ATR/session-time) and execution truth (estimated vs
+filled credit, estimated vs filled exit cost, limit-vs-market exit path, P&L). This is the
+future training set for: IV/RV entry gating, fill-quality prediction, dynamic profit
+targets, and regime clustering. `python -m src.utils.trade_log` reports with a hard
+"n<30 = noise" warning.
 
 ## 8. Self-learning loop
 
-1. **Nightly (21:00 UTC weeknights, GitHub Actions):** pull 30 days of real data →
-   retrain LightGBM → compare holdout logloss vs the deployed model → commit the new
-   model **only if better** (verified working: `auto-retrain 2026-07-05`).
-2. **Next morning 9:25:** runner `git pull`s the improved model before trading.
-3. **Intraday:** performance monitor tracks rolling win rate; `should_retrain()` flags
-   degradation (<40% over 50 trades); self-corrector applies bounded de-risking
-   immediately without waiting for the nightly cycle.
+1. **Nightly (21:00 UTC weeknights, GitHub Actions):** pull 30 days of real data → retrain
+   **four models** (direction classifier, range forecaster, breach-down, breach-up) → each
+   compared to the deployed version on holdout (logloss / MAE) → committed **only if
+   better** (verified working: `auto-retrain 2026-07-05`).
+2. **Next morning 9:25:** runner `git pull`s the improved models before trading.
+3. **Intraday:** performance monitor tracks rolling win rate; consecutive-loss brake pauses
+   entries after 6 straight losses; self-corrector applies bounded de-risking on longer
+   degradation (<40% win over 50 trades).
+4. **Continuously:** the TradeLog accumulates the decision-context + fill dataset that
+   future upgrades will be trained and judged on.
 
 ## 9. Operations calendar
 
@@ -225,7 +280,8 @@ set above the model's reachable maximum.
 
 **Monitoring:** `logs/daily_YYYYMMDD.log` (session narrative), `logs/bot.jsonl`
 (structured), `logs/launchd.{out,err}`, GitHub Actions tab (retrains), Telegram alerts if
-configured in `.env`. Trades/decisions persist in `memory.db` (SQLite).
+configured in `.env`. Decision bias/whipsaw state in `memory.db`; per-trade context + fills
+in `trades.db` (`python -m src.utils.trade_log` for the report).
 
 **Kill switch:** `launchctl bootout gui/$UID ~/Library/LaunchAgents/com.pcnslt.odte-spy-bot.plist`
 stops the schedule; Ctrl-C on a running session flattens before exiting; quitting Gateway
@@ -241,15 +297,20 @@ severs the API (bot fails safe next poll).
 
 1. **Fill realism is the experiment.** Research fills used last-traded aggregate prices ±
    slippage, not NBBO. Historical NBBO needs Polygon Advanced ($199). The paper phase
-   answers this with real fills instead.
-2. **IBKR market data may be delayed** (feed requests delayed-data fallback, type 3). For
+   answers this with real fills instead — now instrumented per-trade in the TradeLog.
+2. **The 90-day OOS window is wearing out.** ~8 experiments have been judged on the same
+   62 trading days; multiple-comparisons risk is real. New evidence sources: live TradeLog,
+   longer history within the 2-year entitlement, or a reserved never-touched holdout.
+3. **IBKR market data may be delayed** (feed requests delayed-data fallback, type 3). For
    a minute-bar strategy with wide gates this is tolerable in paper; a real-time
    subscription (~$1.50–15/mo) would remove it.
-3. **The ML edge is weak** — P(up) lives in ≈0.38–0.60. It's a filter, not an oracle.
-   The strategy's economics come from theta + risk management, not prediction.
-4. Single concurrent position; spread credit estimated from last leg prices (limit order
-   protects entry); one strategy, one underlying.
-5. Mac must be on (wake schedule handles sleep, not shutdown); IBKR 2FA weekly.
+4. **The directional ML edge is weak** — P(up) lives in ≈0.38–0.60. It's a filter, not an
+   oracle. The strategy's economics come from theta + risk management, not prediction.
+5. **No IV history, no NBBO history, no news feed** on current entitlements — any proposal
+   requiring them is untestable today (instrument-don't-adopt doctrine applies).
+6. Single concurrent position; qty pinned at 1 by account scale; one strategy, one
+   underlying; spread credit estimated from last leg prices when quotes are unavailable.
+7. Mac must be on (wake schedule handles sleep, not shutdown); IBKR 2FA weekly.
 
 ## 12. Promotion criteria (before any real dollar)
 
