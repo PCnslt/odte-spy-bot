@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS trades (
     spot REAL, regime TEXT, ml_prob REAL, range_pred REAL,
     p_breach_dn REAL, p_breach_up REAL,
     iv_short REAL,            -- implied vol of the short leg (Polygon snapshot), if available
-    rv_annual REAL,           -- realized vol (annualized) from live features
+    rv_annual REAL,           -- realized vol (annualized, 5-min window) from live features
+    rv_60m REAL,              -- realized vol (annualized) over the trailing 60 minutes (H1)
     rvol REAL, atr_5 REAL, minutes_into_session REAL,
     limit_exit INTEGER        -- 1 if closed via limit order, 0 if market
 );
@@ -49,17 +50,25 @@ CREATE TABLE IF NOT EXISTS trades (
 
 
 class TradeLog:
+    # Columns added after the original schema: migrated in-place (SQLite ADD COLUMN).
+    _MIGRATIONS = ["rv_60m REAL"]
+
     def __init__(self, db_path: str | Path = "trades.db"):
         self._conn = sqlite3.connect(str(db_path))
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
+        for col in self._MIGRATIONS:
+            try:
+                self._conn.execute(f"ALTER TABLE trades ADD COLUMN {col}")
+            except sqlite3.OperationalError:
+                pass  # already present
         self._conn.commit()
 
     def open_trade(self, **kw) -> int:
         cols = ["opened_at", "kind", "short_strike", "long_strike", "width", "quantity",
                 "credit_est", "spot", "regime", "ml_prob", "range_pred",
-                "p_breach_dn", "p_breach_up", "iv_short", "rv_annual", "rvol", "atr_5",
-                "minutes_into_session"]
+                "p_breach_dn", "p_breach_up", "iv_short", "rv_annual", "rv_60m", "rvol",
+                "atr_5", "minutes_into_session"]
         vals = [kw.get(c) for c in cols]
         cur = self._conn.execute(
             f"INSERT INTO trades ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",

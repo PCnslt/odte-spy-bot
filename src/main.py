@@ -23,7 +23,8 @@ from .data.data_pipeline import build_snapshot
 from .data.ibkr_feed import IBKRFeed
 from .execution.ibkr_broker import IBKRBroker
 from .execution.position_manager import PositionManager
-from .execution.risk import defense_triggered, liquidity_ok, spread_ev
+from .execution.risk import (assign_arm, defense_triggered, gap_exceeds, liquidity_ok,
+                             spread_ev)
 from .learning.anomaly_detector import AnomalyAction, AnomalyDetector
 from .learning.evaluator import PerformanceMonitor
 from .signals.lightgbm_model import DirectionalClassifier
@@ -41,6 +42,31 @@ log = get_logger("main")
 def _parse(s: str) -> time:
     h, m = map(int, s.split(":"))
     return time(h, m)
+
+
+def healthcheck(cfg, mode: str = "paper") -> bool:
+    """Minimal AUTHENTICATED check for schedulers: the port being open is not enough —
+    Gateway can be running but logged out (e.g. after weekly 2FA expiry). Connect, demand
+    a managed account and a positive net liquidation, disconnect. Exit 0/1."""
+    ib = cfg.execution.ibkr
+    port = ib.paper_port if mode == "paper" else ib.live_port
+    broker = IBKRBroker(cfg, mode=mode)
+    try:
+        broker.connect()
+        accounts = broker.ib.managedAccounts()
+        netliq = broker.account_value()
+        ok = bool(accounts) and netliq > 0
+        print(f"HEALTHCHECK {'PASS' if ok else 'FAIL'}: accounts={accounts} "
+              f"netliq=${netliq:,.0f} port={port}")
+        return ok
+    except Exception as exc:
+        print(f"HEALTHCHECK FAIL: {exc}")
+        return False
+    finally:
+        try:
+            broker.disconnect()
+        except Exception:
+            pass
 
 
 def selftest(cfg, mode: str = "paper") -> bool:
@@ -181,6 +207,8 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
     max_ct = cfg.risk["per_trade"]["max_contracts"]
 
     open_spreads: list[dict] = []
+    gap_day = None          # opening-gap guard state (checked once per session)
+    gap_block = False
 
     def _record_close(pos: dict, exit_cost: float, reason: str, now,
                       exit_cost_est: float | None = None, limit_exit: bool = False) -> None:
@@ -299,6 +327,21 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
 
             # 2. New entries inside the session window only.
             if open_t <= t < no_new_t:
+                # Opening-gap guard (once per session): a big overnight gap means a violent
+                # open the warming-up anomaly detector can't see yet — sit the day out.
+                if gap_day != now.date():
+                    gap_day = now.date()
+                    g = feed.overnight_gap()
+                    gap_block = gap_exceeds(g, intel.get("gap_guard_pct", 0.01))
+                    if gap_block:
+                        alerter.send(f"GAP GUARD: overnight gap {g:+.2%} >= "
+                                     f"{intel.get('gap_guard_pct', 0.01):.2%} — no new "
+                                     f"entries today.", level="WARN")
+                if gap_block:
+                    if once:
+                        break
+                    _time.sleep(poll)
+                    continue
                 snap = build_snapshot(cfg, bars, model=model)
                 vol = float(snap.features.get("rv_annual", 0.0))
                 ret1 = float(snap.features.get("ret_1", 0.0))
@@ -339,8 +382,15 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                                 log.info("Skipped %s: forecast range %.4f needs strike "
                                          "beyond max OTM cap.", kind, range_pred)
                             else:
+                                # Width A/B (pre-registered H2b): deterministic per-entry arm.
+                                if intel.get("width_experiment_enabled", False):
+                                    width = float(assign_arm(
+                                        now.strftime("%Y-%m-%dT%H:%M"),
+                                        list(intel.get("width_arms", [sp.width]))))
+                                else:
+                                    width = sp.width
                                 spread = feed.resolve_spread(kind, price, now.date(),
-                                                             sp.width, otm)
+                                                             width, otm)
                                 if spread:
                                     # --- real leg quotes: liquidity gate + mid pricing ---
                                     q = feed.leg_quotes(spread)
@@ -395,6 +445,10 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                                                     "P" if kind == "bull_put" else "C",
                                                     now.date())
                                                 iv_short = iv_client.current_iv(tick)
+                                            # Trailing 60-min realized vol (H1's RV term).
+                                            r60 = bars["close"].pct_change().tail(60)
+                                            rv_60m = (float(r60.std()) * (252 * 390) ** 0.5
+                                                      if len(r60.dropna()) >= 30 else None)
                                             pos["trade_id"] = tradelog.open_trade(
                                                 opened_at=now.isoformat(), kind=kind,
                                                 short_strike=float(spread["short"].strike),
@@ -407,6 +461,7 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                                                 p_breach_dn=p_dn, p_breach_up=p_up,
                                                 iv_short=iv_short,
                                                 rv_annual=snap.features.get("rv_annual"),
+                                                rv_60m=rv_60m,
                                                 rvol=snap.rvol, atr_5=snap.atr_5min,
                                                 minutes_into_session=snap.features.get(
                                                     "minutes_into_session"))
@@ -443,12 +498,16 @@ def main() -> None:
                         help="exit after the session close (for launchd/cron scheduling)")
     parser.add_argument("--selftest", action="store_true",
                         help="validate the IBKR live path (no orders placed) and exit")
+    parser.add_argument("--healthcheck", action="store_true",
+                        help="authenticated Gateway check for schedulers; exit 0/1")
     args = parser.parse_args()
 
     cfg = load_config()
     mode = args.mode or cfg.execution.get("mode", "paper")
     if mode == "live" and not cfg.execution.get("live_confirmed", False):
         raise SystemExit("Refusing live mode: set execution.live_confirmed: true in config first.")
+    if args.healthcheck:
+        raise SystemExit(0 if healthcheck(cfg, mode) else 1)
     if args.selftest:
         raise SystemExit(0 if selftest(cfg, mode) else 1)
     run(cfg, mode, once=args.once, daily=args.daily)

@@ -123,6 +123,29 @@ class IBKRFeed:
                 "short_price": prices[0], "long_price": prices[1],
                 "credit": credit, "width": abs(short_strike - long_strike)}
 
+    def overnight_gap(self) -> Optional[float]:
+        """(today's open - prior session close) / prior close, from real daily bars.
+        None when unavailable. Used by the opening-gap guard: 0DTE positions never survive
+        overnight here, but ENTERING into a violent post-gap open is a real risk the
+        anomaly detector can't see until it has warmed up."""
+        from ib_insync import Stock
+
+        try:
+            spy = Stock(self.symbol, self.exchange, self.currency)
+            self.ib.qualifyContracts(spy)
+            bars = self.ib.reqHistoricalData(
+                spy, endDateTime="", durationStr="2 D", barSizeSetting="1 day",
+                whatToShow="TRADES", useRTH=True, formatDate=2)
+            if len(bars) < 2:
+                return None
+            prev_close, today_open = float(bars[-2].close), float(bars[-1].open)
+            if prev_close <= 0:
+                return None
+            return (today_open - prev_close) / prev_close
+        except Exception as exc:
+            log.warning("overnight_gap unavailable: %s", exc)
+            return None
+
     def leg_quotes(self, spread: dict, timeout_s: float = 4.0) -> Optional[dict]:
         """REAL bid/ask for both legs via a market-data snapshot (works with delayed data).
         Returns {short_bid, short_ask, long_bid, long_ask, mid_credit} or None if any side

@@ -123,6 +123,40 @@ def test_event_guard_block_and_widen(tmp_path):
     assert g.check(date(2026, 7, 15)) is None
 
 
+# --- gap guard + experiment arms ---------------------------------------------------
+def test_gap_exceeds():
+    from src.execution.risk import gap_exceeds
+    assert gap_exceeds(0.015, 0.01)          # +1.5% gap blocks at 1% threshold
+    assert gap_exceeds(-0.02, 0.01)          # down-gaps count too
+    assert not gap_exceeds(0.005, 0.01)
+    assert not gap_exceeds(None, 0.01)       # unknown gap never blocks
+
+
+def test_assign_arm_deterministic_and_balanced():
+    from src.execution.risk import assign_arm
+    arms = [5, 10]
+    a = assign_arm("2026-07-06T10:31", arms)
+    assert a == assign_arm("2026-07-06T10:31", arms)     # deterministic
+    assert a in arms
+    # Over many minutes the split should be roughly balanced (no degenerate constant).
+    picks = [assign_arm(f"2026-07-06T{h:02d}:{m:02d}", arms)
+             for h in range(10, 15) for m in range(0, 60)]
+    frac10 = sum(1 for p in picks if p == 10) / len(picks)
+    assert 0.35 < frac10 < 0.65
+
+
+# --- retrain sanity floor -----------------------------------------------------------
+def test_retrain_sanity_floor(tmp_path, monkeypatch):
+    from src.learning import trainer
+    monkeypatch.setattr(trainer, "_METRICS_HISTORY", tmp_path / "hist.json")
+    # Insufficient history: everything passes.
+    assert trainer._sanity_ok("m", 99.0)
+    for v in (0.30, 0.31, 0.29, 0.30):
+        trainer._record_metric("m", v)
+    assert trainer._sanity_ok("m", 0.35)      # near median: fine
+    assert not trainer._sanity_ok("m", 0.90)  # 3x median: corrupted-data signature
+
+
 # --- trade log --------------------------------------------------------------------
 def test_trade_log_roundtrip_and_slippage(tmp_path):
     from src.utils.trade_log import TradeLog
@@ -131,7 +165,7 @@ def test_trade_log_roundtrip_and_slippage(tmp_path):
                         short_strike=743.0, long_strike=738.0, width=5.0, quantity=1,
                         credit_est=0.40, spot=744.5, regime="chop", ml_prob=0.56,
                         range_pred=0.0031, p_breach_dn=0.42, p_breach_up=0.38,
-                        iv_short=0.19, rv_annual=0.14, rvol=1.4, atr_5=0.35,
+                        iv_short=0.19, rv_annual=0.14, rv_60m=0.15, rvol=1.4, atr_5=0.35,
                         minutes_into_session=45.0)
     tl.close_trade(tid, closed_at="2026-07-06T11:30:00", exit_reason="take_profit",
                    exit_cost_est=0.20, exit_cost_fill=0.22, credit_fill=0.38,

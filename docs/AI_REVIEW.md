@@ -146,6 +146,28 @@ the same overused 90-day window = overfitting by construction), and a fill-quali
 **Standing rule for future rounds:** proposals that need data the system doesn't have are
 neither accepted nor rejected — they are *instrumented*, and the TradeLog decides later.
 
+---
+
+# Round 4 — convergence (2026-07-05)
+
+Round 4 (after receiving our critique + SYSTEM.md) was the first genuinely useful round:
+it stopped proposing signal models, addressed statistical hygiene, and pointed at
+structure-over-signal. Dispositions:
+
+| Item | Disposition |
+|---|---|
+| Validation protocol (holdout + correction + pre-registration) | **Adopted** → `docs/RESEARCH_PROTOCOL.md`. Holdout corrected: DeepSeek said "reserve the last 150 days" — the last 90 days are already burned; reserved **2025-01-02→2025-06-30** instead. |
+| Structure > signal ($10-width first) | **Tested (exploratory): PF 1.02, +$0.52/trade — first PF>1.0 in system history.** Pre-registered H2 (holdout confirmation) + H2b (live width A/B, running). |
+| Pre-registered hypotheses | Adopted as H1 (IV/RV), H2/H2b (width), H3 (limit exits), H4 (PT A/B, queued). |
+| Data spend | Agreed: stay at $29/mo; the TradeLog is better evidence than $199 historical NBBO at this trade count. |
+| Failure mode #1 (silent auth expiry) | **Built:** `--healthcheck` (authenticated account check) now gates the morning session in `run_paper_day.sh`. |
+| Failure mode #2 (corrupted retrain) | **Built:** bar-count abort + 2×-median sanity floor over `models/metrics_history.json`, ahead of the only-if-better gate. |
+| Failure mode #3 (overnight gap blows out positions) | **Premise corrected:** 0DTE positions never survive overnight here (15:55 flatten, same-day expiry). The real risk is *entering* a violent post-gap open → built the **opening-gap guard** (no new entries when |gap| ≥ 1%). |
+
+Round-4 lesson: adversarial review works in both directions — the external model improved
+after being confronted with its record, and its structural instinct produced the first
+PF>1.0 exploratory result. The protocol now exists to keep that result honest.
+
 ## Risk assessment of the adopted design (no bullshit)
 
 - **The range model can be wrong at exactly the wrong time.** Vol forecasts fail hardest

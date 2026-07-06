@@ -366,6 +366,8 @@ def main():
                    help="use the intelligence layer: range-model strikes + defense exits")
     p.add_argument("--ev", action="store_true",
                    help="EV gate: skip entries where credit < width x P(breach) + min_ev")
+    p.add_argument("--width", type=float, default=None,
+                   help="override spread width in dollars (structural test, e.g. 10)")
     args = p.parse_args()
     cfg = load_config()
     if args.no_breakout:
@@ -376,6 +378,9 @@ def main():
         for k in ("use_range_strikes", "defense_enabled"):
             cfg.intelligence._data[k] = True
             setattr(cfg.intelligence, k, True)
+    if args.width is not None:
+        cfg.spread._data["width"] = args.width
+        cfg.spread.width = args.width
     run(cfg, days=args.days, train_win=args.train, test_win=args.test,
         quantile=args.quantile, smart=args.smart, ev_gate=args.ev)
 

@@ -54,6 +54,21 @@ class RiskCalculator:
 
 
 # --- credit-spread decision helpers (pure, unit-tested) ---------------------------
+def gap_exceeds(gap: float | None, threshold_pct: float) -> bool:
+    """Opening-gap guard predicate. None (gap unknown) -> False: don't block on missing
+    telemetry, the anomaly detector still protects intraday."""
+    if gap is None:
+        return False
+    return abs(gap) >= threshold_pct
+
+
+def assign_arm(ts_iso_minute: str, arms: list) -> object:
+    """Deterministic per-trade experiment-arm assignment: stable md5 hash of the entry
+    minute. Removes selection bias without any state; reproducible from the TradeLog."""
+    import hashlib
+
+    h = int(hashlib.md5(ts_iso_minute.encode()).hexdigest(), 16)
+    return arms[h % len(arms)]
 def spread_ev(credit: float, p_breach: float, pt_frac: float = 0.5,
               stop_mult: float = 2.0) -> float:
     """Premium-richness proxy CONSISTENT WITH THE EXIT STRUCTURE.

@@ -35,6 +35,45 @@ def train(cfg, days: int, download: bool = True) -> DirectionalClassifier:
     return clf
 
 
+_METRICS_HISTORY = Path("models/metrics_history.json")
+
+
+def _load_hist() -> dict:
+    if _METRICS_HISTORY.exists():
+        try:
+            return json.loads(_METRICS_HISTORY.read_text())
+        except Exception:
+            return {}
+    return {}
+
+
+def _record_metric(key: str, value: float) -> None:
+    hist = _load_hist()
+    hist.setdefault(key, []).append(round(float(value), 6))
+    hist[key] = hist[key][-30:]
+    _METRICS_HISTORY.parent.mkdir(parents=True, exist_ok=True)
+    _METRICS_HISTORY.write_text(json.dumps(hist, indent=2))
+
+
+def _sanity_ok(key: str, value: float, mult: float = 2.0) -> bool:
+    """Absolute sanity floor: reject a candidate whose validation metric is > mult x the
+    median of recent deployed metrics. Catches corrupted-data retrains that the RELATIVE
+    only-if-better gate cannot (both models score badly on garbage; one still 'wins')."""
+    import statistics
+
+    hist = _load_hist().get(key, [])
+    if len(hist) < 3:
+        return True  # not enough history to judge
+    med = statistics.median(hist[-5:])
+    if med <= 0:
+        return True
+    if value > mult * med:
+        log.error("SANITY REJECT %s: %.6f > %.1fx median(%.6f) — data corruption likely; "
+                  "keeping deployed model.", key, value, mult, med)
+        return False
+    return True
+
+
 def build_range_training_set(cfg, bars):
     """(X, y) for the range forecaster: features -> forward max excursion fraction."""
     include_vix = has_vix(bars)
@@ -132,11 +171,19 @@ def main() -> None:
     model_path = cfg.model.path
     meta_path = cfg.model.meta_path
 
-    clf = train(cfg, days, download=not args.no_download)
+    # Data sanity: a corrupted/partial download must abort the whole retrain, not train on it.
+    bars = load_bars(cfg, days, download=not args.no_download)
+    if len(bars) < 1000:
+        raise SystemExit(f"ABORT retrain: only {len(bars)} bars for {days} days — "
+                         "data feed problem; refusing to train on garbage.")
+
+    clf = train(cfg, days, download=False)
 
     result = {"direction_updated": True, "range_updated": True}
-    if args.retrain and DirectionalClassifier.exists(model_path, meta_path):
-        new_ll = _validation_logloss(clf, cfg, days)
+    new_ll = _validation_logloss(clf, cfg, days)
+    if not _sanity_ok("direction_logloss", new_ll):
+        result["direction_updated"] = False
+    elif args.retrain and DirectionalClassifier.exists(model_path, meta_path):
         old = DirectionalClassifier.load(model_path, meta_path)
         old_ll = _validation_logloss(old, cfg, days)
         log.info("Direction retrain check: new logloss=%.4f vs old=%.4f", new_ll, old_ll)
@@ -147,12 +194,15 @@ def main() -> None:
         clf.save(model_path, meta_path)
         log.info("Saved direction model to %s", model_path)
         result["top_features"] = list(clf.feature_importance())[:8]
+        _record_metric("direction_logloss", new_ll)
 
     # --- range forecaster (the spread-seller's target) ---
     rpath, rmeta = cfg.model.range_path, cfg.model.range_meta_path
     rf = train_range(cfg, days, download=False)  # bars already cached above
-    if args.retrain and RangeForecaster.exists(rpath, rmeta):
-        new_mae = _validation_mae(rf, cfg, days)
+    new_mae = _validation_mae(rf, cfg, days)
+    if not _sanity_ok("range_mae", new_mae):
+        result["range_updated"] = False
+    elif args.retrain and RangeForecaster.exists(rpath, rmeta):
         old_rf = RangeForecaster.load(rpath, rmeta)
         old_mae = _validation_mae(old_rf, cfg, days)
         log.info("Range retrain check: new MAE=%.6f vs old=%.6f", new_mae, old_mae)
@@ -162,23 +212,27 @@ def main() -> None:
     if result["range_updated"]:
         rf.save(rpath, rmeta)
         log.info("Saved range model to %s", rpath)
+        _record_metric("range_mae", new_mae)
 
     # --- breach models (EV / premium-richness gate) ---
     bdn, bup = train_breach(cfg, days)
-    for side, clf in (("dn", bdn), ("up", bup)):
+    for side, bclf in (("dn", bdn), ("up", bup)):
         bpath = cfg.model.get(f"breach_{side}_path")
         bmeta = cfg.model.get(f"breach_{side}_meta_path")
         key = f"breach_{side}_updated"
         result[key] = True
-        if args.retrain and DirectionalClassifier.exists(bpath, bmeta):
-            new_ll = _breach_logloss(clf, cfg, days, side)
+        b_ll = _breach_logloss(bclf, cfg, days, side)
+        if not _sanity_ok(f"breach_{side}_logloss", b_ll):
+            result[key] = False
+        elif args.retrain and DirectionalClassifier.exists(bpath, bmeta):
             old_ll = _breach_logloss(DirectionalClassifier.load(bpath, bmeta), cfg, days, side)
-            log.info("Breach-%s retrain check: new=%.4f vs old=%.4f", side, new_ll, old_ll)
-            if new_ll >= old_ll:
+            log.info("Breach-%s retrain check: new=%.4f vs old=%.4f", side, b_ll, old_ll)
+            if b_ll >= old_ll:
                 result[key] = False
         if result[key]:
-            clf.save(bpath, bmeta)
+            bclf.save(bpath, bmeta)
             log.info("Saved breach-%s model to %s", side, bpath)
+            _record_metric(f"breach_{side}_logloss", b_ll)
 
     print(json.dumps(result))
 

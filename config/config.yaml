@@ -86,6 +86,14 @@ intelligence:
   # current mid; escalate to market if unfilled. Stops/defense/flatten are always market.
   limit_exits: true
   limit_exit_escalate_s: 120   # unfilled limit close escalates to market after this many seconds
+  # Opening-gap guard: if |today's open - prior close| >= this, no new entries all session
+  # (0DTE never holds overnight; the risk is ENTERING a violent post-gap open).
+  gap_guard_pct: 0.01
+  # LIVE WIDTH EXPERIMENT (pre-registered as H2b in docs/RESEARCH_PROTOCOL.md):
+  # per-entry width chosen by deterministic hash of the entry minute — fresh, unbiased
+  # evidence on the structural question ($10 width was PF 1.02 exploratory vs 0.94 at $5).
+  width_experiment_enabled: true
+  width_arms: [5, 10]
   range_horizon_bars: 60       # forecast window for expected max excursion (minutes)
   range_safety_mult: 1.25      # short strike must sit beyond expected range x this
   max_short_otm_pct: 0.01      # if the safe strike is further than 1% OTM, skip (no edge)
