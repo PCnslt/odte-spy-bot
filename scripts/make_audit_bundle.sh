@@ -33,7 +33,6 @@ FILES=(
   src/learning/trainer.py
   src/learning/evaluator.py
   src/learning/anomaly_detector.py
-  src/learning/self_corrector.py
   src/research/spreads.py
   src/research/walkforward.py
   src/utils/config.py
