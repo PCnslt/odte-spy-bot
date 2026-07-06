@@ -47,6 +47,10 @@ project before this one. Rules here bind all future research, human- or AI-propo
   under conservative assumptions). Reject → $10-width is dead historically (live A/B may
   still speak).
 - **Scheduled:** after ≥1 month of live width A/B (so both evidence streams mature together).
+- **Second amendment (2026-07-05, still before holdout contact):** the harness itself was
+  corrected again (RTH train/serve matching — v3). v3 exploratory: $5 PF 0.56 / $10 PF 0.63;
+  the width effect shrank to +0.07 PF (was +0.20 under v2) — treat H2's prior as weak.
+  The confirmatory look, when taken, uses harness v3. Threshold unchanged (PF > 1.00).
 
 ### H2b — live width A/B (running from 2026-07-06)
 - **Mechanism:** per-entry width ∈ {5, 10} by deterministic md5 hash of the entry minute

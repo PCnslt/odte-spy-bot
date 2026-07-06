@@ -29,11 +29,17 @@ allowed to be traded.
 
 ```
 ┌─ This Mac (America/New_York) ─────────────────────────────────────────┐
+│  RUNTIME: ~/trading/odte-spy-bot  (git clone — deliberately OUTSIDE   │
+│    iCloud: launchd cannot read Mobile Documents, and iCloud sync of   │
+│    SQLite mid-write risks corruption). Dev copy lives in iCloud.      │
 │  launchd (com.pcnslt.odte-spy-bot)     pmset wake 9:20 weekdays       │
+│  KeepAlive: crash-only restart (clean --daily exit ends the day;      │
+│    a crash relaunches; startup reconciliation flattens orphans)       │
 │    └─ scripts/run_paper_day.sh  (9:25 ET weekdays)                    │
-│         ├─ git pull --ff-only         ← picks up nightly model        │
-│         ├─ port-check 127.0.0.1:4002  ← fails loudly if Gateway down  │
+│         ├─ git pull --ff-only + PYTEST GATE (revert on failure)       │
+│         ├─ port-check + AUTHENTICATED --healthcheck                   │
 │         └─ caffeinate python -m src.main --mode paper --daily         │
+│              └─ startup: flatten_orphans() (crash recovery)           │
 │                                                                       │
 │  IB Gateway 10.45 (/Applications), logged into PAPER (DUR193467)      │
 │    • API port 4002, Read-Only API disabled, auto-restart 23:45        │

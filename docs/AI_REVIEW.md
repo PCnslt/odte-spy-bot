@@ -220,6 +220,49 @@ real fills fall; the live width A/B continues unchanged.
 the corrected harness with acceptance **PF > 1.00** (break-even under pessimistic fills =
 genuine edge under conservative assumptions). Recorded in RESEARCH_PROTOCOL.md.
 
+---
+
+# Round 6 — pre-emptive self-audit before the next external round (2026-07-05)
+
+Four holes found internally, one of them fatal to the whole operation:
+
+1. **FATAL: launchd cannot read iCloud Drive.** The repo (and the runner script) lived in
+   `~/Library/Mobile Documents/...`; launchd's load-time run exited 127 ("can't open input
+   file"). **The 9:25 session would never have started** — discovered only because the new
+   crash-only KeepAlive ran the job at load. Fix: the RUNTIME is now a plain clone at
+   `~/trading/odte-spy-bot` (also removes the iCloud-syncs-SQLite-mid-write corruption
+   hazard); the iCloud copy is the dev workspace; the runner derives paths from its own
+   location. Verified: launchd load-run executes, weekend guard exits 0, no restart loop.
+2. **Crash recovery:** a mid-session crash left real positions unmanaged (restart had no
+   memory of them, and launchd wouldn't restart at all). Now: KeepAlive restarts on crash
+   only, and startup calls `flatten_orphans()` — any account position this process didn't
+   open is closed at market, fail-closed, with an alert.
+3. **H3 was unanalyzable as built:** market exits recorded ESTIMATES; actual market fills
+   were never captured, so limit-vs-market had no market-side data. All closes (limit,
+   escalated, urgent market) now flow through one pending-close tracker that records the
+   real fill; the interrupt path drains briefly to catch in-flight closes.
+4. **Train/serve distribution mismatch:** Polygon aggregates include pre/after-hours bars;
+   the live IBKR feed is RTH-only. Models were trained on a distribution the live system
+   never sees, and labels could include after-hours moves. `_rth_only()` now filters at the
+   `load_bars` choke point (caches stay raw).
+
+## Harness v3 (RTH) — the evidence, revised again
+
+| Variant | v1 original | v2 pessimistic fills | **v3 + RTH-matched** |
+|---|---|---|---|
+| $5 baseline | PF 0.94, −$1.04 | PF 0.70, −$6.62 | **PF 0.56, −$10.86 (104 tr)** |
+| $10 width | PF 1.02, +$0.52 | PF 0.90, −$2.30 | **PF 0.63, −$10.26 (96 tr)** |
+
+Every honesty correction has made the strategy look worse — the pattern itself is the
+finding: **the original harness's near-break-even story was substantially fill-model and
+data-hygiene artifact.** The width effect, "+0.20 PF, robust" under v2, is **+0.07 under
+v3 — no longer distinguishable from noise.** Claims that survive all three harnesses:
+selling >> buying, and costs dominate. Claims that don't: any near-break-even PF, the
+width effect's magnitude. v3 is the authoritative harness going forward (it matches what
+the live system actually sees); reality still likely sits between v1 and v3 fills, and the
+TradeLog's est-vs-fill data is the instrument that will say where. The live width A/B
+continues — real fills outrank all of this.
+
 ## Risk assessment of the adopted design (no bullshit)
 
 - **The range model can be wrong at exactly the wrong time.** Vol forecasts fail hardest
