@@ -1,0 +1,13 @@
+[Unit]
+Description=odte-spy-bot daily paper session
+After=ibgateway.service network-online.target
+
+[Service]
+Type=oneshot
+User=__USER__
+WorkingDirectory=__REPO__
+# Optional dead-man's switch: ping healthchecks.io at start (absence of ping = alert).
+ExecStartPre=/bin/sh -c '[ -z "__HC_URL__" ] || curl -fsS -m 10 "__HC_URL__/start" || true'
+ExecStart=/bin/bash __REPO__/scripts/run_paper_day.sh
+ExecStopPost=/bin/sh -c '[ -z "__HC_URL__" ] || curl -fsS -m 10 "__HC_URL__" || true'
+TimeoutStartSec=8h

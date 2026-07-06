@@ -1,0 +1,9 @@
+[Unit]
+Description=Restart IB Gateway nightly at 23:45 ET
+
+[Timer]
+OnCalendar=*-*-* 23:45 America/New_York
+Persistent=false
+
+[Install]
+WantedBy=timers.target

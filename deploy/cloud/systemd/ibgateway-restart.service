@@ -1,0 +1,6 @@
+[Unit]
+Description=Nightly IB Gateway restart (headless memory hygiene)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl restart ibgateway.service

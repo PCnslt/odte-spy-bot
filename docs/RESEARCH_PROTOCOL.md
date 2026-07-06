@@ -140,6 +140,11 @@ experiment, default $5.
 
 ## 4. Standing rules
 
+0. **The 500-trade kill rule (adopted R11, from external review):** at n ≥ 500 live paper
+   trades, compute the bootstrapped 95% CI of $/trade. If the UPPER bound is below $0,
+   the strategy family is retired — the research infrastructure pivots to a new strategy
+   class through this same protocol. Hard commitment; no "one more tweak" appeals.
+
 1. **Signals freeze:** no new entry-signal models until the TradeLog itself provides
    evidence that entries (not costs) are the binding constraint.
 2. **Instrument, don't adopt:** proposals needing data we lack specify the TradeLog

@@ -1,0 +1,9 @@
+[Unit]
+Description=Run the paper session weekdays 09:25 ET
+
+[Timer]
+OnCalendar=Mon..Fri 09:25 America/New_York
+Persistent=true
+
+[Install]
+WantedBy=timers.target

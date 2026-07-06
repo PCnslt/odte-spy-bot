@@ -1,0 +1,17 @@
+[Unit]
+Description=IB Gateway (headless, via IBC)
+After=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Environment=DISPLAY=:1
+# Xvfb + IBC-managed Gateway. IBC handles the login dialog; weekly 2FA via x11vnc.
+ExecStart=/usr/bin/xvfb-run -n 1 -s "-screen 0 1280x800x24" \
+  /opt/ibc/scripts/ibcstart.sh --gateway --mode=paper \
+  --ibc-ini=/home/__USER__/ibc/config.ini
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

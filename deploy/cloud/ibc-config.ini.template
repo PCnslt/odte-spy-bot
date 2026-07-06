@@ -1,0 +1,11 @@
+# IBC config template — copy to ~/ibc/config.ini and edit. Docs: IbcAlpha/IBC userguide.
+IbLoginId=YOUR_IBKR_USERNAME
+IbPassword=
+TradingMode=paper
+AcceptNonBrokerageAccountWarning=yes
+AcceptIncomingConnectionAction=accept
+ReadOnlyApi=no
+OverrideTwsApiPort=4002
+ExistingSessionDetectedAction=primary
+AutoRestartTime=
+TwoFactorTimeoutAction=restart

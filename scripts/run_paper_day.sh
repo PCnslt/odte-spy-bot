@@ -55,4 +55,15 @@ rc=$?
 # End-of-day evidence summary: every session closes with the TradeLog report.
 echo "=== $(date) TradeLog report ==="
 "$REPO/venv/bin/python" -m src.utils.trade_log --db "$REPO/trades.db" || true
+
+# Dashboard: regenerate from trades.db and publish to the repo (viewable on GitHub —
+# no Mac needed to see it). Failures here never affect the session's exit code.
+echo "=== $(date) dashboard publish ==="
+if "$REPO/venv/bin/python" -m src.dashboard --db "$REPO/trades.db" --out "$REPO/docs/dashboard"; then
+  git add docs/dashboard && \
+  git -c user.name="odte-bot" -c user.email="bot@localhost" \
+      commit -m "dashboard: EOD $(date +%Y-%m-%d)" >/dev/null 2>&1 && \
+  git push origin main >/dev/null 2>&1 && echo "dashboard pushed" || echo "dashboard: nothing to push"
+fi
+
 exit $rc

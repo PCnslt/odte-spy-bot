@@ -1,0 +1,12 @@
+[Unit]
+Description=x11vnc on the Gateway display (localhost only; access via SSH tunnel)
+After=ibgateway.service
+
+[Service]
+Type=simple
+User=__USER__
+ExecStart=/usr/bin/x11vnc -display :1 -localhost -forever -nopw -quiet
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
