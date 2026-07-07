@@ -27,6 +27,7 @@ from .execution.risk import (assign_arm, defense_triggered, gap_exceeds, liquidi
                              spread_ev, stop_cost)
 from .learning.anomaly_detector import AnomalyAction, AnomalyDetector
 from .learning.evaluator import PerformanceMonitor
+from .signals.cost_meta_labeler import CostMetaLabeler
 from .signals.lightgbm_model import DirectionalClassifier
 from .signals.range_model import RangeForecaster, atr_range_estimate, dynamic_short_otm
 from .signals.signal_generator import SignalGenerator
@@ -208,6 +209,14 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
             breach[side] = DirectionalClassifier.load(bp, bm)
     if breach:
         log.info("Loaded breach models: %s", sorted(breach))
+
+    # H10 shadow cost-quality meta-labeler. Fail-closed: absent -> predict_one returns 0.5.
+    # Observational ONLY — it logs P(BAD_FILL), it never gates a trade.
+    cost_labeler = None
+    _cmp, _cmm = cfg.model.get("cost_meta_path"), cfg.model.get("cost_meta_meta_path")
+    if _cmp and _cmm and CostMetaLabeler.exists(_cmp, _cmm):
+        cost_labeler = CostMetaLabeler.load(_cmp, _cmm)
+        log.info("Loaded cost-meta-labeler (shadow).")
 
     intel = cfg.intelligence
     events = EventGuard(intel.get("events_file", "config/events.yaml"))
@@ -523,6 +532,37 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                                             r60 = _today["close"].pct_change().tail(60)
                                             rv_60m = (float(r60.std()) * (252 * 390) ** 0.5
                                                       if len(r60.dropna()) >= 30 else None)
+                                            # H10 SHADOW cost-quality: real leg half-spreads +
+                                            # cost context -> P(BAD_FILL). Logged only; the
+                                            # labeler NEVER gates a trade (it's 0.5 until a
+                                            # model exists). No entry logic reads this.
+                                            short_hs = ((q["short_ask"] - q["short_bid"]) / 2
+                                                        if q else None)
+                                            long_hs = ((q["long_ask"] - q["long_bid"]) / 2
+                                                       if q else None)
+                                            mins_close = max(0.0, (close_t.hour * 60
+                                                             + close_t.minute)
+                                                             - (t.hour * 60 + t.minute))
+                                            _wall = (gex or {}).get("gamma_wall")
+                                            _hsf = ((short_hs + long_hs) / spread["credit"]
+                                                    if (short_hs is not None
+                                                        and long_hs is not None
+                                                        and spread["credit"]) else None)
+                                            cost_feats = {
+                                                "short_half_spread": short_hs,
+                                                "long_half_spread": long_hs,
+                                                "half_spread_frac": _hsf,
+                                                "minutes_into_session": snap.features.get(
+                                                    "minutes_into_session"),
+                                                "minutes_to_close": mins_close,
+                                                "rv_annual": snap.features.get("rv_annual"),
+                                                "credit": spread["credit"],
+                                                "width": spread["width"],
+                                                "gex_net": (gex or {}).get("gex_net"),
+                                                "gamma_wall_dist": (abs(price - _wall) / price
+                                                                    if _wall else None)}
+                                            p_bad_fill = (cost_labeler.predict_one(cost_feats)
+                                                          if cost_labeler is not None else 0.5)
                                             pos["trade_id"] = tradelog.open_trade(
                                                 opened_at=now.isoformat(), kind=kind,
                                                 short_strike=float(spread["short"].strike),
@@ -545,7 +585,11 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                                                 gamma_wall=(gex or {}).get("gamma_wall"),
                                                 short_delta=short_delta, prob_touch=ptouch,
                                                 iv_atm=(gex or {}).get("atm_iv"),
-                                                skew_25d=(gex or {}).get("skew_25d"))
+                                                skew_25d=(gex or {}).get("skew_25d"),
+                                                short_half_spread=short_hs,
+                                                long_half_spread=long_hs,
+                                                minutes_to_close=mins_close,
+                                                p_bad_fill=p_bad_fill)
                                         except Exception as exc:
                                             log.warning("TradeLog open failed: %s", exc)
                                         alerter.send(

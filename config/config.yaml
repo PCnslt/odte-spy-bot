@@ -71,6 +71,9 @@ model:
   breach_dn_meta_path: models/lightgbm_breach_dn_meta.json
   breach_up_path: models/lightgbm_breach_up.txt
   breach_up_meta_path: models/lightgbm_breach_up_meta.json
+  # H10 shadow cost-quality meta-labeler (trained locally from trades.db once >=100 fills).
+  cost_meta_path: models/cost_meta_labeler.txt
+  cost_meta_meta_path: models/cost_meta_labeler_meta.json
 
 # Intelligence layer for spread entries/exits. Every feature is fail-safe: missing model,
 # missing quotes, or empty calendar => the previous static behavior.

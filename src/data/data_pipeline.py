@@ -16,6 +16,7 @@ from ..common import MarketSnapshot
 from ..signals.feature_engineering import build_features
 from ..signals.labeling import make_labels
 from ..signals.regime_classifier import classify_regime
+from ..utils.holdout import guard as holdout_guard
 from ..utils.logger import get_logger
 from .polygon_options import PolygonError, PolygonOptions, _cache_fresh, _day_is_complete
 
@@ -49,6 +50,11 @@ def load_bars(cfg, days: int, download: bool = False,
     """Real SPY minute bars over the last `days`, with a real `vix` column when entitled."""
     poly = poly or get_polygon(cfg)
     start, end = _date_range(days)
+    # B4 holdout-integrity guard: fail closed if this range would touch the reserved
+    # confirmatory window. Transparent to all normal runs (recent/exploratory ranges never
+    # intersect 2025-H1); only an accidental reach-back — or a pre-registered ODTE_CONFIRM
+    # look — hits it. This is the linchpin that keeps the holdout provably untouched.
+    holdout_guard(start, end)
 
     cache = poly.cache_dir / f"spy_1m_{start:%Y%m%d}_{end:%Y%m%d}.parquet"
     # Same-day partial-session guard (audit C2): only serve/write caches whose final day

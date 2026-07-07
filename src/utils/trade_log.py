@@ -61,7 +61,11 @@ class TradeLog:
                    "short_delta REAL",   # short leg's delta at entry
                    "prob_touch REAL",    # 2*|delta| — market-implied P(reach short strike)
                    "iv_atm REAL",        # ATM IV (session)
-                   "skew_25d REAL"]      # 25-delta risk reversal (session)
+                   "skew_25d REAL",      # 25-delta risk reversal (session)
+                   # H10 cost-meta-labeler: cost-context at entry + its shadow prediction.
+                   "short_half_spread REAL", "long_half_spread REAL",
+                   "minutes_to_close REAL",
+                   "p_bad_fill REAL"]    # shadow P(BAD_FILL); observational, gates nothing
 
     def __init__(self, db_path: str | Path = "trades.db"):
         self._conn = sqlite3.connect(str(db_path))
@@ -79,7 +83,8 @@ class TradeLog:
                 "credit_est", "alt_width_credit_est", "spot", "regime", "ml_prob",
                 "range_pred", "p_breach_dn", "p_breach_up", "iv_short", "rv_annual",
                 "rv_60m", "rvol", "atr_5", "minutes_into_session", "gex_net", "gamma_wall",
-                "short_delta", "prob_touch", "iv_atm", "skew_25d"]
+                "short_delta", "prob_touch", "iv_atm", "skew_25d",
+                "short_half_spread", "long_half_spread", "minutes_to_close", "p_bad_fill"]
         vals = [kw.get(c) for c in cols]
         cur = self._conn.execute(
             f"INSERT INTO trades ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",

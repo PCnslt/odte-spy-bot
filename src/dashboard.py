@@ -16,6 +16,11 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+from .briefing import briefing as operator_briefing
+from .briefing import panel_markdown as briefing_panel
+from .monitor import death_spiral_check, panel_markdown
+from .utils.holdout import ledger_status
+
 OUT_DIR = Path("docs/dashboard")
 
 # Month-1 thresholds from docs/RESEARCH_PROTOCOL.md (mirrored here for display only).
@@ -91,6 +96,13 @@ def generate(db_path: str = "trades.db", out_dir: Path = OUT_DIR) -> Path:
               "pessimistic fill assumptions (~−$8.6/trade). The open question this page "
               "answers over time: **do real fills beat that model?**\n")
 
+    # --- plain-English bottom line (src/briefing.py) — the very first thing anyone reads:
+    #     is it working, and what should you do. ---
+    md += briefing_panel(operator_briefing(db_path))
+
+    # --- early-warning: strategy death-spiral monitor (src/monitor.py). ---
+    md += panel_markdown(death_spiral_check(db_path))
+
     # --- headline stats ---
     n = len(rows)
     md.append("## Live results (paper)\n")
@@ -145,8 +157,18 @@ def generate(db_path: str = "trades.db", out_dir: Path = OUT_DIR) -> Path:
     sk_n = sum(1 for r in rows if r.get("skew_25d") is not None)
     md.append(f"| H8 touch-prob EV | logged: {pt_n} | ≥60/group |")
     md.append(f"| H9 skew regime | logged: {sk_n} | ≥60/group |")
+    pbf = [r.get("p_bad_fill") for r in rows if r.get("p_bad_fill") is not None]
+    pbf_mean = (sum(pbf) / len(pbf)) if pbf else None
+    md.append(f"| H10 cost meta-labeler (shadow) | logged: {len(pbf)} · mean P(bad-fill): "
+              f"{_fmt(pbf_mean, '.2f')} | ≥100 to train, then holdout |")
     md.append(f"| H4 profit target | queued (starts after H2b) | — |")
     md.append("")
+    # Holdout integrity (B4): show the reserved window is still untouched (or which
+    # pre-registered looks have been spent). Enforced in code by src/utils/holdout.py.
+    hs = ledger_status()
+    looks = (", ".join(hs["consumed_looks"]) if hs["consumed_looks"] else "none — untouched")
+    md.append(f"**Holdout integrity:** reserved {hs['holdout']} · confirmatory looks "
+              f"consumed: {hs['n_consumed']} ({looks})\n")
 
     # --- recent trades ---
     if rows:

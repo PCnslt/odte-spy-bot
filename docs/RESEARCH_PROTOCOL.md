@@ -132,10 +132,32 @@ project before this one. Rules here bind all future research, human- or AI-propo
   filter only if the top-tercile-skew group beats the bottom by ≥ $2/trade, 95% CI > $0,
   n ≥ 60/group.
 
+### H10 — cost-quality meta-labeler (REGISTERED 2026-07-06, observational; ships SHADOW)
+- **Rationale (why THIS survives the zero-information-entries verdict):** it predicts
+  EXECUTION cost, not direction or P&L — the one lever that doesn't require timing skill, on
+  the constraint (costs) the evidence proved is binding. Its strongest feature (leg
+  half-spreads) is already the `liquidity_ok` gate, so its only headroom is interactions that
+  gate misses (spread × time-of-day × dealer-gamma). Do not oversell it.
+- **Instrumentation (live now):** `src/signals/cost_meta_labeler.py`. Per entry the TradeLog
+  records the real leg half-spreads, half-spread/credit fraction, minutes-into/-to-session,
+  realized-vol magnitude, credit, width, net GEX, gamma-wall distance, and the model's shadow
+  `p_bad_fill`. Trained LOCALLY from `trades.db` once ≥100 closed fills with both classes
+  exist (never the reserved holdout); degrades to 0.5 until then. Cost-context features ONLY —
+  no returns / RSI / MACD / breakout / ML-direction.
+- **Label:** `BAD_FILL = (entry_slippage + exit_slippage) > 0.5 × credit_est` (recalibrate the
+  0.5 once a real slippage distribution exists).
+- **Prediction (written before data):** trades with predicted `p_bad_fill < 0.4` have a lower
+  mean total slippage than trades with `p_bad_fill ≥ 0.4`, on a holdout of the next 100 paper
+  trades AFTER the model is frozen. **Accept** (as a live pre-trade filter) only if that
+  difference's bootstrap 95% CI < $0 (lower slippage) at n ≥ 60/group AND the labeler beats
+  the existing `liquidity_ok` gate on the same trades. Entry-side gating has failed twice, so
+  the bar stays deliberately high; it ships OFF regardless until this clears.
+
 ## Parking lot — designated future TradeLog consumers (NOT registered; revisit at n ≥ 200)
-- **Meta-labeler** (filter which entries to keep): requires ≥200 real trades as training
-  data. Training it on harness trades from a signal proven uninformative would be
-  learning to filter noise with noise.
+- **Entry meta-labeler** (filter which entries to keep by predicted WIN): still parked —
+  requires ≥200 real trades AND a conditioning feature (H7–H10) that first proves it separates
+  outcomes. Training it on a signal proven uninformative would be learning to filter noise
+  with noise. (Distinct from H10's COST meta-labeler, which predicts execution cost, not wins.)
 - **Slippage predictor** (expected fill cost by time-of-day/spread state): requires the
   TradeLog's est-vs-fill columns at n ≥ 200 fills.
 - **IV-percentile entry gate**: requires months of self-logged `iv_short` history (no
@@ -184,4 +206,5 @@ experiment, default $5.
 | H2b width | $5 / $10 | md5(entry minute) | 2026-07-06 | n ≥ 50/arm |
 | H3 limit exits | limit-first vs market (natural split by urgency) | exit-type | 2026-07-06 | n ≥ 50 limit exits |
 | H1 IV/RV | observational (no assignment) | — | 2026-07-06 | n ≥ 60/group |
+| H10 cost meta-labeler | shadow p_bad_fill (logged, gates nothing) | — | 2026-07-06 | train n ≥ 100, then holdout n ≥ 60/group |
 | H4 profit target | 40% / 60% | md5(entry minute) | **not started** | after H2b |
