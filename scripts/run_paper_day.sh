@@ -32,8 +32,20 @@ fi
 # deploy mirror (trades.db + logs/ are gitignored and untouched by reset), so mirroring
 # origin/main is safe. The pytest gate below still reverts to PRE_PULL if the synced code fails.
 PRE_PULL=$(git rev-parse HEAD)
-git fetch --quiet origin main && git reset --hard origin/main \
-  || echo "WARN: sync to origin failed; running with local version."
+# Hard-cap the fetch: the osxkeychain credential helper can BLOCK in launchd's no-GUI context
+# (it hung the EOD push on 2026-07-07). A stuck fetch here would freeze startup and block the
+# whole day. Kill the git tree after 25s and fall back to the last-deployed local code.
+git fetch --quiet origin main & FPID=$!
+( sleep 25; kill -TERM "$FPID" 2>/dev/null
+  pkill -9 -f "git-credential-osxkeychain" 2>/dev/null
+  pkill -9 -f "git-remote-https.*odte-spy-bot" 2>/dev/null ) & KPID=$!
+if wait "$FPID" 2>/dev/null; then
+  kill "$KPID" 2>/dev/null
+  git reset --hard origin/main || echo "WARN: reset failed; running local version."
+else
+  kill "$KPID" 2>/dev/null
+  echo "WARN: git fetch timed out/failed — running the last-deployed local code."
+fi
 
 # Audit M3: never trade freshly pulled code that fails its own tests — revert and run the
 # last-known-good commit instead (fail closed, but still trade the proven version).
@@ -92,20 +104,17 @@ echo "=== $(date) cost-meta-labeler retrain ==="
 echo "=== $(date) death-spiral monitor ==="
 "$REPO/venv/bin/python" -m src.monitor --db "$REPO/trades.db" || true
 
-# Dashboard: regenerate from trades.db and publish to the repo (viewable on GitHub —
-# no Mac needed to see it). Failures here never affect the session's exit code.
-echo "=== $(date) dashboard publish ==="
+# Dashboard: regenerate LOCALLY from trades.db. Deliberately NO git commit/push: this host is
+# a pull-only deploy mirror. Pushing from here caused (a) local commits that diverged from
+# origin and wedged the morning pull, and (b) an EOD hang on the osxkeychain credential helper
+# in launchd's no-GUI context (2026-07-07). The operator's live view is the hosted artifact +
+# the local live dashboard; the GitHub copy isn't needed and isn't worth the hang risk.
+echo "=== $(date) dashboard (local regen; no push) ==="
 # Save today's SPY intraday from IBKR (Gateway is still up post-session) so the dashboard
 # can plot the session tape with the day's events. No-ops if Gateway is already down.
 "$REPO/venv/bin/python" -m src.session_chart --pull-spy || true
-# Data-driven HTML status page (generated from trades.db; never goes stale).
 "$REPO/venv/bin/python" -m src.dashboard_html --db "$REPO/trades.db" \
   --out "$REPO/docs/dashboard/status.html" || true
-if "$REPO/venv/bin/python" -m src.dashboard --db "$REPO/trades.db" --out "$REPO/docs/dashboard"; then
-  git add docs/dashboard && \
-  git -c user.name="odte-bot" -c user.email="bot@localhost" \
-      commit -m "dashboard: EOD $(date +%Y-%m-%d)" >/dev/null 2>&1 && \
-  git push origin main >/dev/null 2>&1 && echo "dashboard pushed" || echo "dashboard: nothing to push"
-fi
+"$REPO/venv/bin/python" -m src.dashboard --db "$REPO/trades.db" --out "$REPO/docs/dashboard" || true
 
 exit $rc
