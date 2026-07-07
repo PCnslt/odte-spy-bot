@@ -21,9 +21,14 @@ if [ "$dow" -ge 6 ]; then
   exit 0
 fi
 
-# Pull the latest code + nightly-retrained model (fast-forward only; never break local state).
+# Sync to origin/main exactly (self-healing mirror). NOT `pull --ff-only`: the EOD dashboard
+# commit below can leave a local commit that diverges from origin after the nightly retrain,
+# and a plain ff-only pull then wedges — the bot silently stops updating. This host is a pure
+# deploy mirror (trades.db + logs/ are gitignored and untouched by reset), so mirroring
+# origin/main is safe. The pytest gate below still reverts to PRE_PULL if the synced code fails.
 PRE_PULL=$(git rev-parse HEAD)
-git pull --ff-only origin main || echo "WARN: git pull failed; running with local version."
+git fetch --quiet origin main && git reset --hard origin/main \
+  || echo "WARN: sync to origin failed; running with local version."
 
 # Audit M3: never trade freshly pulled code that fails its own tests — revert and run the
 # last-known-good commit instead (fail closed, but still trade the proven version).
