@@ -62,6 +62,24 @@ def parse_log_events(log_text: str) -> list[tuple[float, str, str]]:
     return events
 
 
+def tail_activity(log_text: str, n: int = 30) -> list[tuple[str, str]]:
+    """Human-readable tail of a session log as [(HH:MM:SS, message)] — the bot's narrative
+    (starts, health-checks, entries, halts, skips, session end), with ib_insync noise dropped."""
+    out: list[tuple[str, str]] = []
+    for ln in log_text.splitlines():
+        s = ln.strip()
+        if not s or "ib_insync" in ln or "Warning " in ln:
+            continue
+        m = re.match(r"\d{4}-\d{2}-\d{2} (\d{2}:\d{2}:\d{2})\D+?(?:alert: \[\w+\] |\| )?(.+)", ln)
+        if m:
+            out.append((m.group(1), m.group(2).strip()))
+        elif re.match(r"^\d{2}:\d{2} ", s):        # the runner's own "09:25 ..." echoes
+            out.append((s[:5], s[6:]))
+        elif s.startswith("==="):                  # section banners
+            out.append(("", s.strip("= ")))
+    return out[-n:]
+
+
 def trade_events(db_path: str, day: date) -> list[tuple[float, str, str]]:
     """Opens/closes from trades.db for `day` as chart events."""
     if not Path(db_path).exists():

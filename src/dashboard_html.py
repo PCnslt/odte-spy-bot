@@ -16,7 +16,7 @@ from pathlib import Path
 from .briefing import briefing
 from .dashboard import _equity_svg, _rows
 from .monitor import death_spiral_check
-from .session_chart import build_session_svg
+from .session_chart import build_session_svg, tail_activity
 from .utils.holdout import ledger_status
 
 _CSS = """
@@ -57,6 +57,8 @@ td.h{font-family:var(--mono);color:var(--text)}td .n{font-family:var(--mono);col
 .step .t{font-family:var(--mono);font-size:12px;color:var(--accent);text-align:right}
 .step .d{border-left:1px solid var(--line);padding-left:16px}.step .d b{font-size:14px}.step .d span{display:block;color:var(--muted);font-size:12.5px}
 footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);color:var(--faint);font-size:12px;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.log{background:#0b1016;border:1px solid var(--line);border-radius:12px;padding:12px 14px;font-family:var(--mono);font-size:12px;line-height:1.7;max-height:300px;overflow:auto}
+.log div{white-space:pre-wrap}.log .t{color:var(--accent);margin-right:8px}
 """
 
 _TIMELINE = [
@@ -153,6 +155,17 @@ def render_body(db_path: str = "trades.db") -> str:
         f'<div class="chart" style="background:var(--panel);padding:10px 12px 4px">{_sess}</div>'
         '</section>') if _sess else ""
 
+    # Recent activity — the day's session log (the bot's narrative).
+    try:
+        _lp = Path(f"logs/daily_{datetime.now():%Y%m%d}.log")
+        _acts = tail_activity(_lp.read_text(), 25) if _lp.exists() else []
+    except Exception:
+        _acts = []
+    logs_html = ('<section class="sec"><span class="eyebrow">Recent activity — the bot&#39;s log'
+                 '</span><div class="log">' + "".join(
+                     f'<div><span class="t">{t}</span>{msg}</div>' for t, msg in _acts)
+                 + '</div></section>') if _acts else ""
+
     steps = "".join(
         f'<div class="step"><span class="t">{t}</span><div class="d"><b>{h}</b>'
         f'<span>{s}</span></div></div>' for t, h, s in _TIMELINE)
@@ -174,6 +187,7 @@ def render_body(db_path: str = "trades.db") -> str:
   <div class="grid">{tiles_html}</div>
   {chart}
   {session_html}
+  {logs_html}
 
   <section class="sec"><span class="eyebrow">Pre-registered experiments — locked until their sample lands (no peeking)</span>
     <div class="tablewrap"><table>

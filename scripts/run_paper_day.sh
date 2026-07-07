@@ -58,9 +58,17 @@ until nc -z 127.0.0.1 4002 2>/dev/null && \
 done
 echo "$(date +%H:%M) Gateway authenticated — starting the session."
 
+# Live local dashboard: a SEPARATE read-only process (own IBKR client id) that auto-refreshes
+# so you can watch the session live at http://127.0.0.1:8080. Cannot affect trading; killed
+# at session end. Failure to start never affects the session.
+"$REPO/venv/bin/python" -m src.livedash --port 8080 >>"$LOG" 2>&1 &
+LIVEDASH_PID=$!
+echo "$(date +%H:%M) Live dashboard at http://127.0.0.1:8080 (pid $LIVEDASH_PID)"
+
 # caffeinate -i: keep the Mac from idle-sleeping while the session runs.
 caffeinate -i "$REPO/venv/bin/python" -m src.main --mode paper --daily
 rc=$?
+kill "$LIVEDASH_PID" 2>/dev/null || true
 
 # End-of-day evidence summary: every session closes with the TradeLog report.
 echo "=== $(date) TradeLog report ==="
