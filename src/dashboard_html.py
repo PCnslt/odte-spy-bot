@@ -60,6 +60,11 @@ td.h{font-family:var(--mono);color:var(--text)}td .n{font-family:var(--mono);col
 footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);color:var(--faint);font-size:12px;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .log{background:#0b1016;border:1px solid var(--line);border-radius:12px;padding:12px 14px;font-family:var(--mono);font-size:12px;line-height:1.7;max-height:300px;overflow:auto}
 .log div{white-space:pre-wrap}.log .t{color:var(--accent);margin-right:8px}
+.daytabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;overflow-x:auto;padding-bottom:2px}
+.daytab{font-family:var(--mono);font-size:12px;padding:6px 12px;border-radius:8px;cursor:pointer;background:var(--panel);color:var(--muted);border:1px solid var(--line);white-space:nowrap;transition:all .12s}
+.daytab:hover{color:var(--text);border-color:var(--accent-dim)}
+.daytab.active{color:#0e141b;background:var(--accent);border-color:var(--accent);font-weight:600}
+.daycap{font-family:var(--mono);font-size:11.5px;color:var(--faint);margin:2px 2px 8px}
 """
 
 _TIMELINE = [
@@ -145,16 +150,41 @@ def render_body(db_path: str = "trades.db") -> str:
     if n:
         chart = f'<div class="chart">{_equity_svg(pnls)}</div>'
 
-    # Intraday SPY tape with the day's events (halts / gap guards / trades) marked on it.
-    try:
-        _sess = build_session_svg(db_path=db_path)
-    except Exception:
-        _sess = ""
+    # SPY session browser — pick ANY saved day and see that day's tape with its events marked.
+    import glob as _glob
+    import re as _re
+    from datetime import date as _D
+    _day_files = sorted(_glob.glob("logs/spy_intraday_*.csv"), reverse=True)
+    _sbd = {s.get("date"): s for s in read_sessions()}
+    _tabs, _views = [], []
+    for _f in _day_files:
+        _m = _re.search(r"spy_intraday_(\d{4})(\d{2})(\d{2})\.csv", _f)
+        if not _m:
+            continue
+        _dy = _D(int(_m[1]), int(_m[2]), int(_m[3]))
+        try:
+            _svg = build_session_svg(day=_dy, db_path=db_path)
+        except Exception:
+            _svg = ""
+        if not _svg:
+            continue
+        _ds = _dy.isoformat()
+        _first = not _views
+        _s = _sbd.get(_ds, {})
+        _cap = ((f'{_s.get("trades", 0)} trades · {_s.get("closed", 0)} closed · '
+                 f'{_s.get("halts", 0)} halts'
+                 + (f' · SPY ${_s["spy_lo"]:.0f}–${_s["spy_hi"]:.0f}' if _s.get("spy_lo") else ''))
+                if _s else '')
+        _tabs.append(f'<button class="daytab{" active" if _first else ""}" data-day="{_ds}" '
+                     f'onclick="showDay(\'{_ds}\')">{_dy:%a %b %-d}</button>')
+        _views.append(f'<div class="dayview" id="dv-{_ds}" '
+                      f'style="display:{"block" if _first else "none"}">'
+                      f'<div class="daycap">{_cap}</div>{_svg}</div>')
     session_html = (
-        '<section class="sec"><span class="eyebrow">Today on SPY — the bot&#39;s events on '
-        'the intraday tape</span>'
-        f'<div class="chart" style="background:var(--panel);padding:10px 12px 4px">{_sess}</div>'
-        '</section>') if _sess else ""
+        '<section class="sec"><span class="eyebrow">SPY session tape — select a day</span>'
+        '<div class="daytabs">' + "".join(_tabs) + '</div>'
+        '<div class="chart" style="background:var(--panel);padding:10px 12px 4px">'
+        + "".join(_views) + '</div></section>') if _views else ""
 
     # Recent activity — the day's session log (the bot's narrative).
     try:
@@ -225,7 +255,17 @@ def render_body(db_path: str = "trades.db") -> str:
 
   <footer><span>Paper trading only · not financial advice · 0DTE spreads can lose their full defined risk per trade.</span>
     <span class="eyebrow">generated {now}</span></footer>
-</div>"""
+</div>
+<script>
+function showDay(d){{
+  var vs=document.querySelectorAll('.dayview');
+  for(var i=0;i<vs.length;i++){{vs[i].style.display='none';}}
+  var el=document.getElementById('dv-'+d);
+  if(el){{el.style.display='block';}}
+  var ts=document.querySelectorAll('.daytab');
+  for(var j=0;j<ts.length;j++){{ts[j].classList.toggle('active', ts[j].getAttribute('data-day')===d);}}
+}}
+</script>"""
 
 
 def render_page(db_path: str = "trades.db") -> str:
