@@ -14,6 +14,11 @@ exec >> "$LOG" 2>&1
 
 echo "=== $(date) run_paper_day starting ==="
 
+# Make EVERY git op fail-fast, never hang. Incident 2026-07-07: the EOD `git push` wedged on
+# the network/credentials, the runner never exited, and a hung runner would block the next
+# day's launchd start. Never prompt (fail if creds missing); abort a stalled transfer.
+export GIT_TERMINAL_PROMPT=0 GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=20
+
 # Weekends: nothing to do (launchd calendar already skips them; belt-and-braces).
 dow=$(date +%u)
 if [ "$dow" -ge 6 ]; then

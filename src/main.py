@@ -45,6 +45,13 @@ def _parse(s: str) -> time:
     return time(h, m)
 
 
+def _loop_stalled(last_beat: float, now: float, threshold_s: float) -> bool:
+    """True if the trading loop hasn't ticked within threshold_s. Incident 2026-07-07: a hung
+    IBKR call froze the whole loop, and because it never EXITED, launchd's crash-restart could
+    not recover it. The watchdog below force-exits on a stall so the runner relaunches."""
+    return (now - last_beat) > threshold_s
+
+
 def healthcheck(cfg, mode: str = "paper") -> bool:
     """Minimal AUTHENTICATED check for schedulers: the port being open is not enough —
     Gateway can be running but logged out (e.g. after weekly 2FA expiry). Connect, demand
@@ -345,9 +352,28 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
 
     alerter.send(f"Bot starting: IBKR {mode} on port {port} — CREDIT SPREADS "
                  f"(width ${sp.width}, PT {pt_frac:.0%}, stop {stop_mult}x)")
+
+    # Watchdog: if a broker call hangs and the loop stops ticking, force-exit so launchd
+    # relaunches us. A hung (non-exiting) process defeats the crash-restart net. Heartbeat is
+    # bumped at the top of every iteration; a stall well beyond one poll means we're wedged.
+    import os as _os
+    import threading as _threading
+    _hb = [_time.time()]
+    _stall_s = max(150.0, 4.0 * poll)
+
+    def _watchdog() -> None:
+        while True:
+            _time.sleep(30)
+            if _loop_stalled(_hb[0], _time.time(), _stall_s):
+                log.error("WATCHDOG: trading loop stalled %.0fs (>%ds) — forcing exit for "
+                          "relaunch.", _time.time() - _hb[0], int(_stall_s))
+                _os._exit(1)
+    _threading.Thread(target=_watchdog, daemon=True, name="watchdog").start()
+
     try:
         while True:
             now = datetime.now()
+            _hb[0] = _time.time()
             t = now.time()
             try:
                 bars = feed.latest_bars(lookback_minutes=120)
