@@ -113,8 +113,15 @@ echo "=== $(date) dashboard (local regen; no push) ==="
 # Save today's SPY intraday from IBKR (Gateway is still up post-session) so the dashboard
 # can plot the session tape with the day's events. No-ops if Gateway is already down.
 "$REPO/venv/bin/python" -m src.session_chart --pull-spy || true
+# Durable per-day history (trades, P&L, halts, SPY range) — accumulates in logs/sessions.jsonl.
+"$REPO/venv/bin/python" -m src.session_log --record --date "$(date +%Y-%m-%d)" \
+  --db "$REPO/trades.db" --logs "$REPO/logs" || true
 "$REPO/venv/bin/python" -m src.dashboard_html --db "$REPO/trades.db" \
   --out "$REPO/docs/dashboard/status.html" || true
+# Archive today's dashboard snapshot so each day is preserved, not overwritten.
+mkdir -p "$REPO/docs/dashboard/history"
+cp "$REPO/docs/dashboard/status.html" \
+  "$REPO/docs/dashboard/history/status_$(date +%Y%m%d).html" 2>/dev/null || true
 "$REPO/venv/bin/python" -m src.dashboard --db "$REPO/trades.db" --out "$REPO/docs/dashboard" || true
 
 exit $rc

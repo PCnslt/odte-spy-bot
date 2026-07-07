@@ -29,11 +29,17 @@ signal:
   # direction is near-random, so P(up) is compressed near 0.5 (empirically ~0.38-0.60).
   # A threshold above the model's max => zero trades. Inspect the distribution and retune
   # every time you retrain (see `trainer` output / the prob stats in the README).
-  ml_threshold_long: 0.55    # prob(up) required to buy calls
-  ml_threshold_short: 0.45   # prob(up) below this to buy puts
-  min_rvol: 1.2              # relative-volume gate
+  ml_threshold_long: 0.55    # prob(up) required to buy calls (only used when use_ml_gate: true)
+  ml_threshold_short: 0.45   # prob(up) below this to buy puts (only used when use_ml_gate: true)
+  # LOOSENED 2026-07-07: the directional model has no edge and its output is pinned ~0.46-0.51,
+  # so the ml gate blocked ~100% of entries (0-1 trades/day). Selling premium doesn't need a
+  # direction forecast — enter on the mechanical rule (RVOL + VWAP side) to actually accumulate
+  # the fills/cost evidence. Bounded by max 4 trades/day + 1 concurrent + defined risk. These
+  # are noise-quality entries by design (we're testing cost economics, not entry skill).
+  use_ml_gate: false         # false = enter on the rule direction, skip the dead ML threshold
+  min_rvol: 1.2              # relative-volume gate (kept: basic activity filter)
   vwap_band_pct: 0.001       # 0.1% distance from VWAP for the rule trigger
-  require_breakout: true     # require a 5-min range breakout (research toggle; false = ML-timed)
+  require_breakout: false    # dropped with the ml gate so entries fire consistently
   use_regime_filter: true
   volatile_regime_min_prob: 0.58   # in 'volatile' regime demand more conviction
 

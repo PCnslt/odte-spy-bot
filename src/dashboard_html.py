@@ -17,6 +17,7 @@ from .briefing import briefing
 from .dashboard import _equity_svg, _rows
 from .monitor import death_spiral_check
 from .session_chart import build_session_svg, tail_activity
+from .session_log import read_sessions
 from .utils.holdout import ledger_status
 
 _CSS = """
@@ -166,6 +167,28 @@ def render_body(db_path: str = "trades.db") -> str:
                      f'<div><span class="t">{t}</span>{msg}</div>' for t, msg in _acts)
                  + '</div></section>') if _acts else ""
 
+    # Session history — one saved row per trading day (historical performance builds here).
+    _sessions = read_sessions()
+    if _sessions:
+        _cum = sum(s.get("net_pnl") or 0.0 for s in _sessions)
+        _tr = "".join(
+            f'<tr><td class="h">{s.get("date","")}</td>'
+            f'<td>{"✓" if s.get("ran") else "—"}</td>'
+            f'<td class="n">{s.get("trades",0)}</td>'
+            f'<td class="n">{s.get("closed",0)}</td>'
+            f'<td class="n">${(s.get("net_pnl") or 0.0):.2f}</td>'
+            f'<td class="n">{s.get("halts",0)}</td>'
+            f'<td class="n">{("$%.0f–$%.0f" % (s["spy_lo"], s["spy_hi"])) if s.get("spy_lo") else "—"}</td></tr>'
+            for s in _sessions)
+        history_html = (
+            '<section class="sec"><span class="eyebrow">Session history — every trading day, '
+            f'saved · cumulative net ${_cum:.2f} over {len(_sessions)} sessions</span>'
+            '<div class="tablewrap"><table><thead><tr><th>Date</th><th>Ran</th><th>Trades</th>'
+            '<th>Closed</th><th>Net P&amp;L</th><th>Halts</th><th>SPY range</th></tr></thead>'
+            f'<tbody>{_tr}</tbody></table></div></section>')
+    else:
+        history_html = ""
+
     steps = "".join(
         f'<div class="step"><span class="t">{t}</span><div class="d"><b>{h}</b>'
         f'<span>{s}</span></div></div>' for t, h, s in _TIMELINE)
@@ -187,6 +210,7 @@ def render_body(db_path: str = "trades.db") -> str:
   <div class="grid">{tiles_html}</div>
   {chart}
   {session_html}
+  {history_html}
   {logs_html}
 
   <section class="sec"><span class="eyebrow">Pre-registered experiments — locked until their sample lands (no peeking)</span>

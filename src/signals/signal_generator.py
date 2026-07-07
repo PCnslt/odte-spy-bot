@@ -28,6 +28,11 @@ class SignalGenerator:
         self.min_rvol = s.get("min_rvol", 1.3)
         self.vwap_band = s.get("vwap_band_pct", 0.001)
         self.require_breakout = s.get("require_breakout", True)
+        # The directional model carries NO edge (random-entry benchmark == full stack), and its
+        # output is compressed near 0.5 so the ml_long/ml_short gate is often unreachable -> ~0
+        # trades. With use_ml_gate False we enter on the mechanical rule alone (premium selling
+        # doesn't need a direction forecast; VWAP side just picks bull-put vs bear-call).
+        self.use_ml_gate = s.get("use_ml_gate", True)
         self.use_regime = s.get("use_regime_filter", True)
         self.volatile_min_prob = s.get("volatile_regime_min_prob", 0.68)
         self.bearish_veto = cfg.sentiment.get("bearish_veto", -0.7)
@@ -66,7 +71,15 @@ class SignalGenerator:
         if rule == 0:
             return SignalDecision(Signal.NO_TRADE, "no_rule_trigger", prob)
 
-        # 3. ML must agree with the rule direction.
+        # 3a. ML-free path: enter on the rule direction alone (see __init__ note).
+        if not self.use_ml_gate:
+            if rule > 0:
+                if long_blocked:
+                    return SignalDecision(Signal.NO_TRADE, "sentiment_veto_long", prob)
+                return SignalDecision(Signal.BUY_CALL, "rule_long", prob)
+            return SignalDecision(Signal.BUY_PUT, "rule_short", prob)
+
+        # 3b. ML must agree with the rule direction.
         if rule > 0 and prob >= self.ml_long and not long_blocked:
             return SignalDecision(Signal.BUY_CALL, "rule+ml_long", prob)
         if rule < 0 and prob <= self.ml_short:
