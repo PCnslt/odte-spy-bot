@@ -202,20 +202,30 @@ class IBKRBroker(Broker):
         the close Trade when one was placed (callers track fills / escalate), else None."""
         from ib_insync import LimitOrder, MarketOrder
 
-        # Cancel the entry order if it never filled.
-        if pos["trade"].orderStatus.status in ("PreSubmitted", "Submitted"):
-            filled = pos["trade"].orderStatus.filled or 0
+        # Key off the ACTUAL filled quantity, never the status string. Incident 2026-07-08: an
+        # unfilled entry stuck in "PendingSubmit" slipped past the old ("PreSubmitted","Submitted")
+        # check, so instead of just cancelling we fired a MARKET SELL of a spread we never bought
+        # -> a phantom SHORT position + P&L that didn't match the broker. Now: cancel any entry
+        # still working, then only ever unwind the quantity that truly filled (0 -> do nothing).
+        st = pos["trade"].orderStatus
+        if st.status not in ("Filled", "Cancelled", "ApiCancelled", "Inactive"):
             self.ib.cancelOrder(pos["order"])
-            if not filled:
-                log.info("Spread entry unfilled; cancelled, nothing to unwind.")
-                return None
+            self.ib.sleep(0)  # let the cancel/any-final-fill settle
+        filled_qty = int(pos["trade"].orderStatus.filled or 0)
+        if filled_qty <= 0:
+            log.info("Spread entry unfilled (status=%s); cancelled, nothing to unwind.",
+                     pos["trade"].orderStatus.status)
+            return None
+        if filled_qty != pos["quantity"]:
+            log.warning("Partial entry fill: unwinding %d of %d requested.",
+                        filled_qty, pos["quantity"])
         if limit_cost is not None:
-            order = LimitOrder("SELL", pos["quantity"], round(-abs(limit_cost), 2), tif="DAY")
+            order = LimitOrder("SELL", filled_qty, round(-abs(limit_cost), 2), tif="DAY")
             trade = self.ib.placeOrder(pos["combo"], order)
-            log.info("Spread close (LIMIT @ cost %.2f) sent x%d", limit_cost, pos["quantity"])
+            log.info("Spread close (LIMIT @ cost %.2f) sent x%d", limit_cost, filled_qty)
             return trade
-        trade = self.ib.placeOrder(pos["combo"], MarketOrder("SELL", pos["quantity"]))
-        log.info("Spread close (market) sent x%d", pos["quantity"])
+        trade = self.ib.placeOrder(pos["combo"], MarketOrder("SELL", filled_qty))
+        log.info("Spread close (market) sent x%d", filled_qty)
         return trade
 
     def escalate_close(self, pos: dict):

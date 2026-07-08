@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="220"
+  viewBox="0 0 720 220" style="background:#fff">
+  <line x1="30" y1="190.0" x2="690" y2="190.0"
+        stroke="#d0d7de" stroke-dasharray="4 3"/>
+  <polyline points="30.0,190.0 250.0,30.0 470.0,109.7 690.0,92.9" fill="none" stroke="#2da44e" stroke-width="2"/>
+  <text x="30" y="16" font-family="monospace" font-size="12" fill="#57606a">
+    cumulative P&amp;L: $156.00 over 3 trades</text>
+</svg>
