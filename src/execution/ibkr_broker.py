@@ -285,28 +285,36 @@ class IBKRBroker(Broker):
 
     # --- orphan reconciliation (self-audit R6: crash recovery) ----------------------
     def orphan_positions(self) -> list:
-        """Real option positions sitting in the account that THIS process has no record of
-        (e.g. after a mid-session crash). Anything here is unmanaged risk."""
+        """Real SPY positions the process isn't managing — orphaned option legs (after a crash
+        or a close that never confirmed) AND shares from a 0DTE assignment. All unmanaged risk.
+        Incident 2026-07-09: a breached bear-call whose market close didn't confirm was left
+        open; the short call expired ITM and assigned into short stock — which the OPT-only
+        sweep would never have cleared. Now STK is included."""
         out = []
         for p in self.ib.positions():
             c = p.contract
-            if getattr(c, "secType", "") == "OPT" and c.symbol == self.cfg.symbol \
-                    and p.position:
+            if c.symbol == self.cfg.symbol and p.position \
+                    and getattr(c, "secType", "") in ("OPT", "STK"):
                 out.append(p)
         return out
 
     def flatten_orphans(self) -> int:
-        """Fail-closed: close every orphaned option leg at market. An unmanaged 0DTE
-        position is strictly worse than a realized exit."""
+        """Fail-closed: market-close every orphaned SPY leg — options AND assigned shares. An
+        unmanaged 0DTE position (or the naked stock a breached-and-assigned spread leaves) is
+        strictly worse than a realized exit. Expired option legs can't be traded and simply
+        fall away at settlement; the stock they assign into is what this must catch."""
         from ib_insync import MarketOrder
 
         orphans = self.orphan_positions()
         for p in orphans:
             c = p.contract
-            c.exchange = c.exchange or self.exchange
+            # Assigned shares route to SMART; option legs keep their options exchange.
+            c.exchange = "SMART" if getattr(c, "secType", "") == "STK" \
+                else (c.exchange or self.exchange)
             action = "SELL" if p.position > 0 else "BUY"
             self.ib.placeOrder(c, MarketOrder(action, abs(int(p.position))))
-            log.warning("ORPHAN flattened: %s %s x%d", action, c.localSymbol,
+            log.warning("ORPHAN flattened: %s %s %s x%d", action,
+                        getattr(c, "secType", ""), getattr(c, "localSymbol", "") or c.symbol,
                         abs(int(p.position)))
         return len(orphans)
 

@@ -294,12 +294,30 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                                   exit_cost_fill=actual_cost)
                     open_spreads.remove(pos)
                 elif pos.get("close_market", False):
-                    # Market order not confirmed after 90s: record the estimate, warn.
-                    if (now - pos["close_since"]).total_seconds() > 90:
-                        log.warning("Market close unconfirmed after 90s; recording estimate.")
+                    waited = (now - pos["close_since"]).total_seconds()
+                    if now.time() >= close_t:
+                        # Session over and the market close still hasn't confirmed. We cannot
+                        # keep a 0DTE position open past expiry — sweep any real broker leg,
+                        # record from the estimate (the NetLiq ledger carries the money truth),
+                        # and stop tracking so the day closes out. Any assignment that still
+                        # slips through is caught by the STK-aware startup orphan sweep.
+                        log.error("Market close never confirmed by session end; sweeping "
+                                  "orphans then recording. Position may assign overnight.")
+                        try:
+                            broker.flatten_orphans()
+                        except Exception as exc:
+                            log.error("EOD orphan sweep failed: %s", exc)
                         _record_close(pos, pos["close_cost"], pos["close_reason"], now,
                                       exit_cost_est=pos["close_cost"], limit_exit=False)
                         open_spreads.remove(pos)
+                    elif waited > 90:
+                        # Unconfirmed but the session is STILL OPEN: re-send the close and keep
+                        # tracking. Do NOT book a fake fill and drop a live position — that
+                        # orphaned a breached spread into overnight assignment on 2026-07-09
+                        # (recorded -$5 while the account fell -$365).
+                        log.warning("Market close unconfirmed after %.0fs; re-sending.", waited)
+                        pos["close_trade"] = broker.escalate_close(pos)
+                        pos["close_since"] = now
                 elif force or ((now - pos["close_since"]).total_seconds()
                                > intel.get("limit_exit_escalate_s", 120)):
                     # Escalate limit -> market, but keep tracking to capture the real fill.
@@ -430,6 +448,14 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
 
             # Scheduler mode: once the session is over and everything is flat, exit for the day.
             if daily and t >= close_t and not open_spreads:
+                # Belt-and-suspenders: never end the day leaving a real position the book lost
+                # track of. Expired 0DTE legs can't be traded (they settle); the STK-aware sweep
+                # here + at next startup clears any shares a breach assigned.
+                orphans = broker.orphan_positions()
+                if orphans:
+                    log.warning("Daily exit: %d orphan leg(s) still at broker; sweeping.",
+                                len(orphans))
+                    broker.flatten_orphans()
                 log.info("Session over (%s); daily mode exiting.", t)
                 break
 

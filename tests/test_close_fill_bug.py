@@ -85,3 +85,33 @@ def test_escalate_is_noop_when_limit_fully_filled(cfg):
     ct = _CloseTrade("Submitted", 0)                          # remaining 0 => nothing left
     res = b.escalate_close({"close_trade": ct, "combo": object(), "quantity": 5})
     assert b.ib.placed == [] and res is ct
+
+
+class _Position:
+    def __init__(self, sec_type, symbol, qty):
+        self.contract = type("C", (), {"secType": sec_type, "symbol": symbol,
+                                       "localSymbol": f"{symbol}{sec_type}", "exchange": "",
+                                       "currency": "USD"})()
+        self.position = qty
+        self.avgCost = 1.0
+
+
+def test_flatten_orphans_sweeps_assigned_shares(cfg):
+    """A breached 0DTE short call that expires assigned leaves SHORT stock. flatten_orphans must
+    buy it back — the OPT-only sweep would have left it naked (2026-07-09 incident)."""
+    b = _broker(cfg)
+    b.ib.positions = lambda: [_Position("STK", cfg.symbol, -200),   # assigned short shares
+                              _Position("OPT", cfg.symbol, 2)]        # an OTM long option leg
+    n = b.flatten_orphans()
+    assert n == 2
+    placed = [(o.action, o.totalQuantity) for o in b.ib.placed]
+    assert ("BUY", 200) in placed        # short stock bought back to flat
+    assert ("SELL", 2) in placed         # long option sold to flat
+
+
+def test_flatten_orphans_ignores_flat_and_other_symbols(cfg):
+    b = _broker(cfg)
+    b.ib.positions = lambda: [_Position("STK", cfg.symbol, 0),       # flat — skip
+                              _Position("STK", "QQQ", -100),          # not our symbol — skip
+                              _Position("OPT", cfg.symbol, 1)]        # real orphan
+    assert b.flatten_orphans() == 1
