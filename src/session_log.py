@@ -24,8 +24,10 @@ def _trade_stats(db_path: str, day: str) -> tuple[int, int, float]:
         return (0, 0, 0.0)
     conn = sqlite3.connect(db_path)
     try:
-        rows = conn.execute("SELECT pnl, closed_at FROM trades WHERE opened_at LIKE ?",
-                            (f"{day}%",)).fetchall()
+        rows = conn.execute(
+            "SELECT pnl, closed_at FROM trades WHERE opened_at LIKE ? "
+            "AND IFNULL(exit_reason,'') != 'reconciled_unfilled'",   # not a real trade
+            (f"{day}%",)).fetchall()
     except sqlite3.OperationalError:
         rows = []
     finally:

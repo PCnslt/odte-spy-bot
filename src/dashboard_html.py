@@ -73,14 +73,6 @@ footer{margin-top:36px;padding-top:16px;border-top:1px solid var(--line);color:v
 .daycap{font-family:var(--mono);font-size:11.5px;color:var(--faint);margin:2px 2px 8px}
 """
 
-_TIMELINE = [
-    ("09:25", "Update & health-check", "Pulls latest code + models; refuses to run if tests fail or the broker login expired."),
-    ("09:30–15:30", "Trade credit spreads", "Sells defined-risk $5/$10 SPY verticals, holds to a 50%-credit target."),
-    ("15:55", "Flatten", "Closes everything. Nothing is held overnight — 0DTE expires same day."),
-    ("EOD", "Reconcile & publish", "Records the account NetLiq, cross-checks the books, refreshes this page."),
-]
-
-
 def _account_svg(pts: list[tuple[str, float]]) -> str:
     """Account value (NetLiquidation) over time — the real equity curve. pts=[(date, net_liq)]."""
     if len(pts) < 2:
@@ -127,10 +119,11 @@ def _kind(k: str) -> str:
     return {"bull_put": "Bull put", "bear_call": "Bear call"}.get(k or "", k or "—")
 
 
-def _money(v, signed=False):
+def _money(v, signed=False, cents=False):
     if v is None:
         return "—"
-    return f"${v:+,.0f}" if signed else f"${v:,.0f}"
+    dp = 2 if cents else 0
+    return f"${v:+,.{dp}f}" if signed else f"${v:,.{dp}f}"
 
 
 def render_body(db_path: str = "trades.db") -> str:
@@ -165,28 +158,23 @@ def render_body(db_path: str = "trades.db") -> str:
                   ds["flag"], ("Healthy", "good", "var(--good)", "MONITORING"))
     hword, hcls, dot, hchip = health
 
-    # --- tiles -------------------------------------------------------------------------
+    # --- tiles (pure data: label + value + one short factual chip, no prose) -----------
     pnl_cls = "idle" if total_pnl is None else ("good" if total_pnl >= 0 else "crit")
-    since = ledger[0]["date"] if ledger else None
+    since = ledger[0]["date"][5:].replace("-", "/") if ledger else None   # MM/DD
     tiles = [
-        ("Account value", _money(net_liq), "idle", "IBKR PAPER",
-         "Real paper-account balance (NetLiq)." if net_liq is not None
-         else "Awaiting first reconciliation."),
-        ("Total P&amp;L", _money(total_pnl, signed=True), pnl_cls, "ALL-TIME",
-         (f"NAV minus your ${ledger[0]['net_liq']:,.0f} deposit (since {since})."
-          if ledger else "—")),
-        ("Trades closed", str(n_closed), "idle", "TO DATE",
-         f"Defined-risk credit spreads · {len(sessions)} sessions."),
+        ("Account value", _money(net_liq, cents=True), "idle", "IBKR PAPER"),
+        ("Total P&amp;L", _money(total_pnl, signed=True, cents=True), pnl_cls,
+         f"SINCE {since}" if since else "—"),
+        ("Trades closed", str(n_closed), "idle", f"{len(sessions)} SESSIONS"),
         ("Open positions", str(open_legs), "good" if open_legs == 0 else "warn",
-         "FLAT" if open_legs == 0 else "OPEN", "Flattened at each close — nothing held overnight."),
-        ("System", hword, hcls, hchip,
-         "Auto-retires the strategy if edge turns negative."),
+         "FLAT" if open_legs == 0 else "OPEN"),
+        ("System", hword, hcls, hchip),
     ]
     tiles_html = "".join(
         f'<div class="card"><div class="top"><span class="label">{lab}</span>'
         f'<span class="chip">{chip}</span></div>'
-        f'<div class="val {cls}">{val}</div><div class="sub">{sub}</div></div>'
-        for lab, val, cls, chip, sub in tiles)
+        f'<div class="val {cls}">{val}</div></div>'
+        for lab, val, cls, chip in tiles)
 
     # --- account value curve -----------------------------------------------------------
     acct_pts = [(e["date"], e["net_liq"]) for e in ledger]
@@ -233,10 +221,13 @@ def render_body(db_path: str = "trades.db") -> str:
     hist_html = ""
     if sessions:
         def day_pnl(s):
+            # Account truth only. A day with a ledger delta shows it; a no-trade day is $0;
+            # otherwise "—". NEVER fall back to book net_pnl (that reintroduces the overclaim
+            # the ledger exists to prevent — e.g. book +$156 on a day the account fell).
             d = s.get("date")
             if d in daily:
                 return daily[d]
-            return 0.0 if trades_by_day.get(d, 0) == 0 else s.get("net_pnl")
+            return 0.0 if trades_by_day.get(d, 0) == 0 else None
         tr = ""
         for s in sessions:
             dp = day_pnl(s)
@@ -277,11 +268,6 @@ def render_body(db_path: str = "trades.db") -> str:
             '<th>Strikes</th><th>Credit</th><th>Exit</th><th>P&amp;L</th></tr></thead>'
             f'<tbody>{tr}</tbody></table></div></section>')
 
-    # --- automation timeline -----------------------------------------------------------
-    steps = "".join(
-        f'<div class="step"><span class="t">{t}</span><div class="d"><b>{h}</b>'
-        f'<span>{s}</span></div></div>' for t, h, s in _TIMELINE)
-
     # --- activity log (compact) --------------------------------------------------------
     try:
         lp = Path(f"logs/daily_{datetime.now():%Y%m%d}.log")
@@ -306,14 +292,10 @@ def render_body(db_path: str = "trades.db") -> str:
   {tape_html}
   {hist_html}
   {trades_html}
-
-  <section class="sec"><span class="eyebrow">What runs automatically, every trading day</span>
-    <div class="rail">{steps}</div>
-  </section>
   {log_html}
 
-  <footer><span>Paper trading only · not financial advice · 0DTE spreads risk their full defined loss per trade.</span>
-    <span class="eyebrow">generated {now}</span></footer>
+  <footer><span>Paper trading · not financial advice</span>
+    <span class="eyebrow">updated {now}</span></footer>
 </div>
 <script>
 function showDay(d){{

@@ -9,6 +9,7 @@ value, so features stay honest.
 """
 from __future__ import annotations
 
+import math
 from datetime import date
 from typing import Optional
 
@@ -92,11 +93,15 @@ class IBKRFeed:
         from ib_insync import Option
 
         right = "P" if kind == "bull_put" else "C"
+        # Symmetric OTM placement: put rounds DOWN (further below), call rounds UP (further
+        # above), so both sit the same distance OTM. Was floor()+1 on the call, which overshot
+        # by a full strike whenever spot*(1+otm) landed on an integer (smaller credit than the
+        # matching put). Fixed 2026-07-09.
         if kind == "bull_put":
-            short_strike = float(int(spot * (1 - short_otm_pct)))
+            short_strike = float(math.floor(spot * (1 - short_otm_pct)))
             long_strike = short_strike - width
         else:
-            short_strike = float(int(spot * (1 + short_otm_pct)) + 1)
+            short_strike = float(math.ceil(spot * (1 + short_otm_pct)))
             long_strike = short_strike + width
 
         legs = []

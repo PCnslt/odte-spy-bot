@@ -216,6 +216,7 @@ class IBKRBroker(Broker):
             log.info("Spread entry unfilled (status=%s); cancelled, nothing to unwind.",
                      pos["trade"].orderStatus.status)
             return None
+        pos["_unwound_qty"] = filled_qty   # caller records this size, not the requested qty
         if filled_qty != pos["quantity"]:
             log.warning("Partial entry fill: unwinding %d of %d requested.",
                         filled_qty, pos["quantity"])
@@ -234,10 +235,19 @@ class IBKRBroker(Broker):
         from ib_insync import MarketOrder
 
         ct = pos.get("close_trade")
+        qty = int(pos["quantity"])
         if ct is not None and ct.orderStatus.status not in ("Filled", "Cancelled"):
+            # Market out ONLY what the limit close didn't already fill. Selling the full
+            # requested qty when part had filled would over-sell → phantom SHORT (incident class).
+            # Explicit None check, NOT `or`: remaining==0 is "fully filled", not "unknown".
+            rem = ct.orderStatus.remaining
+            qty = int(rem) if rem is not None else int(pos["quantity"])
             self.ib.cancelOrder(ct.order)
-        trade = self.ib.placeOrder(pos["combo"], MarketOrder("SELL", pos["quantity"]))
-        log.info("Limit close escalated to market x%d", pos["quantity"])
+        if qty <= 0:
+            log.info("Limit close already fully filled; nothing to escalate.")
+            return ct
+        trade = self.ib.placeOrder(pos["combo"], MarketOrder("SELL", qty))
+        log.info("Limit close escalated to market x%d (of %d requested)", qty, pos["quantity"])
         return trade
 
     @staticmethod
@@ -266,6 +276,10 @@ class IBKRBroker(Broker):
                           "credit accounting may be inverted; review before trusting P&L.",
                           st.avgFillPrice)
             pos["_fill_logged"] = True
+        if filled and not st.avgFillPrice:
+            log.warning("Entry filled but avgFillPrice=%r; falling back to the entry limit "
+                        "%.2f as credit_fill — verify against the broker.",
+                        st.avgFillPrice, pos["credit"])
         credit = abs(st.avgFillPrice) if filled and st.avgFillPrice else pos["credit"]
         return filled, credit
 

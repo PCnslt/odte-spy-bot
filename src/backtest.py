@@ -117,7 +117,7 @@ def run_backtest(cfg, days: int = 30, verbose: bool = True,
         price = float(closes[i])
         snap = MarketSnapshot(
             timestamp=idx_utc[i].to_pydatetime(), spy_price=price, spy_volume=float(vols[i]),
-            vwap=price * (1 + float(frow["vwap_dev"])), atr_5min=float(frow["atr_5"]),
+            vwap=price / (1 + float(frow["vwap_dev"])), atr_5min=float(frow["atr_5"]),  # vwap=price/(1+dev)
             rvol=float(frow["rvol"]),
             # Prior 5 bars (exclude the current bar) so a breakout of the range is meaningful.
             high_5min=float(highs[max(i - 5, 0):i].max()) if i else float(highs[i]),

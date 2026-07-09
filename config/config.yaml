@@ -59,7 +59,9 @@ spread:
   # (e.g. 0.5 => exit when closing costs $2.50 on a $5 spread). null = disabled; the
   # 180-day three-arm test + holdout decide whether this replaces hold-to-target.
   stop_width_frac: null
-  min_credit: 0.10           # skip if the net credit is below this (not worth the risk/fees)
+  min_credit: 0.20           # skip if the net credit is below this. 0.10 was a near-no-op that
+                             # permitted lottery-ticket spreads (tiny credit vs full width risk);
+                             # 0.20 floors out the worst reward-to-risk on a cost-dominated book.
   # Spreads need TIME for theta to work — do not inherit the scalper's 10-min time stop.
   max_hold_minutes: 240      # hold up to this long (still flattened before the close)
 
@@ -117,7 +119,9 @@ intelligence:
   max_short_otm_pct: 0.01      # if the safe strike is further than 1% OTM, skip (no edge)
   defense_buffer_pct: 0.001    # close defensively when spot gets within 0.1% of the short strike
   liquidity_max_frac: 0.25     # sum of leg half-spreads must be <= this fraction of credit
-  require_quotes: false        # true = skip entries when leg quotes are unavailable
+  require_quotes: true         # skip entries when leg quotes are unavailable. false let the bot
+                               # price off stale last-trade prints AND bypass the liquidity gate
+                               # exactly when spreads were least liquid — a guaranteed cost-loser.
   entry_limit_frac: 0.95       # entry limit at this fraction of quote-mid credit (else 0.9 of last)
   events_file: config/events.yaml
 

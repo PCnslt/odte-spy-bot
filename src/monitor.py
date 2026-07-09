@@ -65,6 +65,7 @@ def _closed_rows(db_path: str) -> list[dict]:
         rows = [dict(r) for r in conn.execute(
             "SELECT opened_at, pnl, entry_slippage, exit_slippage "
             "FROM trades WHERE closed_at IS NOT NULL AND pnl IS NOT NULL "
+            "AND IFNULL(exit_reason,'') != 'reconciled_unfilled' "   # not a real fill
             "ORDER BY opened_at")]
     except sqlite3.OperationalError:
         rows = []

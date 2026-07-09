@@ -123,6 +123,8 @@ echo "=== $(date) dashboard (local regen; no push) ==="
 mkdir -p "$REPO/docs/dashboard/history"
 cp "$REPO/docs/dashboard/status.html" \
   "$REPO/docs/dashboard/history/status_$(date +%Y%m%d).html" 2>/dev/null || true
-"$REPO/venv/bin/python" -m src.dashboard --db "$REPO/trades.db" --out "$REPO/docs/dashboard" || true
+# NOTE: the old markdown dashboard (src.dashboard -> index.md) is intentionally NOT generated —
+# it headlined BOOK P&L (overclaimed) and duplicated status.html. status.html is the one
+# dashboard, sourced from the account NetLiq ledger.
 
 exit $rc

@@ -33,7 +33,8 @@ def _stats(db_path: str) -> dict:
     try:
         rows = [dict(r) for r in conn.execute(
             "SELECT pnl, entry_slippage, exit_slippage FROM trades "
-            "WHERE closed_at IS NOT NULL")]
+            "WHERE closed_at IS NOT NULL "
+            "AND IFNULL(exit_reason,'') != 'reconciled_unfilled'")]   # not a real fill
     except sqlite3.OperationalError:
         rows = []
     finally:

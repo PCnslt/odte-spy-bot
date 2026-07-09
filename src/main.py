@@ -247,6 +247,10 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
     commission = cfg.risk["commissions"]["per_contract"]
     risk_pct = cfg.risk["per_trade"]["risk_pct"]
     max_ct = cfg.risk["per_trade"]["max_contracts"]
+    # Size and halt against a fixed risk BUDGET, not the full paper NetLiq. A $1M paper balance
+    # makes risk_pct·equity sizing inert (always clamps to max_ct) and the daily-loss halt
+    # (max_daily_loss_pct·equity) unreachable. Falls back to NetLiq if no budget is configured.
+    risk_budget = float(cfg.risk["per_trade"].get("risk_budget_usd") or 0) or broker.account_value()
 
     open_spreads: list[dict] = []
     gap_day = None          # opening-gap guard state (checked once per session)
@@ -254,7 +258,8 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
     gex = None              # R10/H7: session GEX telemetry (fetched once with gap check)
 
     def _record_close(pos: dict, exit_cost: float, reason: str, now,
-                      exit_cost_est: float | None = None, limit_exit: bool = False) -> None:
+                      exit_cost_est: float | None = None, limit_exit: bool = False,
+                      exit_cost_fill: float | None = None) -> None:
         tr = SpreadTrade(pos["open_time"], now, pos["spread"]["kind"],
                          round(pos["credit"], 2), round(max(exit_cost, 0.0), 2),
                          pos["quantity"], reason, commission=commission * pos["quantity"] * 4)
@@ -265,7 +270,10 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                 tradelog.close_trade(
                     pos["trade_id"], closed_at=now.isoformat(), exit_reason=reason,
                     exit_cost_est=exit_cost_est if exit_cost_est is not None else exit_cost,
-                    exit_cost_fill=exit_cost if limit_exit else None,
+                    # Record the ACTUAL fill whenever one was captured — limit OR market. It was
+                    # gated on limit_exit before, so every market exit (the common case) lost its
+                    # real fill and exit-slippage analytics could never populate.
+                    exit_cost_fill=exit_cost_fill,
                     credit_fill=pos["credit"], pnl=tr.pnl, limit_exit=limit_exit)
             except Exception as exc:
                 log.warning("TradeLog close failed: %s", exc)
@@ -282,7 +290,8 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                     _record_close(pos, actual_cost if actual_cost is not None
                                   else pos["close_cost"], pos["close_reason"], now,
                                   exit_cost_est=pos["close_cost"],
-                                  limit_exit=not pos.get("close_market", False))
+                                  limit_exit=not pos.get("close_market", False),
+                                  exit_cost_fill=actual_cost)
                     open_spreads.remove(pos)
                 elif pos.get("close_market", False):
                     # Market order not confirmed after 90s: record the estimate, warn.
@@ -301,23 +310,47 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
 
             filled, credit = broker.spread_fill_status(pos)
             if not filled:
-                # Entry never filled: cancel after 3 minutes (or on force) and forget.
+                # Entry not (fully) filled. On force or after 3 min, cancel the working entry.
+                # close_credit_spread cancels it and, if some contracts DID fill, markets out
+                # exactly that quantity and returns the unwind trade — track it so its real P&L
+                # is recorded (not dropped/zeroed by reconcile) and it isn't left unmanaged.
                 if force or now - pos["open_time"] > timedelta(minutes=3):
-                    broker.close_credit_spread(pos)
-                    open_spreads.remove(pos)
-                    log.info("Unfilled spread entry cancelled.")
+                    tr = broker.close_credit_spread(pos)
+                    if tr is not None:
+                        pos["quantity"] = int(pos.get("_unwound_qty") or pos["quantity"])
+                        pos.update(close_trade=tr, close_since=now,
+                                   close_reason="entry_partial_unwind",
+                                   close_cost=credit, close_market=True)
+                        log.info("Partial entry unwound x%d; tracking the real exit fill.",
+                                 pos["quantity"])
+                    else:
+                        open_spreads.remove(pos)
+                        log.info("Unfilled spread entry cancelled.")
                 continue
             pos["credit"] = credit
             cost = feed.spread_close_cost(pos["spread"])
+
+            # EOD flatten (force) must NEVER be blocked on a missing quote — market out
+            # regardless. Bug fixed 2026-07-09: the cost-None guard used to sit ABOVE the
+            # flatten branch, so a late-day OTM leg with no quote was left open into 0DTE
+            # expiry → overnight assignment / naked-share risk (the invariant is: nothing held
+            # overnight). The real fill is captured on the next poll and recorded.
+            if force:
+                tr = broker.close_credit_spread(pos)   # market SELL of the filled qty
+                if tr is not None:
+                    pos.update(close_trade=tr, close_since=now, close_reason="flatten",
+                               close_cost=(cost if cost is not None else credit),
+                               close_market=True)
+                else:
+                    open_spreads.remove(pos)
+                continue
             if cost is None:
                 continue
             tp_cost = credit * (1 - pt_frac)
             sl_cost = stop_cost(credit, pos["spread"]["width"], stop_mult,
                                 sp.get("stop_width_frac"))
             reason = None
-            if force:
-                reason = "flatten"
-            elif cost <= tp_cost:
+            if cost <= tp_cost:
                 reason, cost = "take_profit", tp_cost
             elif (intel.get("defense_enabled", False) and spot is not None
                   and defense_triggered(
@@ -334,7 +367,7 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
             if reason:
                 # Non-urgent exits (profit target / time stop) try a LIMIT at the current
                 # mid first — don't donate the spread crossing when there's no rush.
-                urgent = force or reason in ("flatten", "stop_loss", "strike_defense")
+                urgent = reason in ("stop_loss", "strike_defense")   # force handled above
                 if (not urgent and intel.get("limit_exits", True)):
                     tr = broker.close_credit_spread(pos, limit_cost=cost)
                     if tr is not None:
@@ -439,7 +472,7 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                 elif a.action == AnomalyAction.NONE:
                     decision = siggen.generate(snap)
                     if decision.signal != Signal.NO_TRADE:
-                        ok, why = pm.can_open(now, broker.account_value(), len(open_spreads))
+                        ok, why = pm.can_open(now, risk_budget, len(open_spreads))
                         # --- event guard (config/events.yaml) ---
                         safety = intel.get("range_safety_mult", 1.25)
                         ev = events.check(now.date()) if ok else None
@@ -508,7 +541,7 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                                 if spread and spread["credit"] >= sp.min_credit:
                                     max_loss = (spread["width"] - spread["credit"]) * 100
                                     qty = max(1, min(max_ct, int(
-                                        (risk_pct * broker.account_value()) // max_loss)))
+                                        (risk_pct * risk_budget) // max_loss)))
                                     limit_frac = (intel.get("entry_limit_frac", 0.95)
                                                   if q is not None else 0.9)
                                     pos = broker.place_credit_spread(

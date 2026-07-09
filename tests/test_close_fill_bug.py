@@ -61,3 +61,27 @@ def test_partial_fill_closes_only_filled(cfg):
     b = _broker(cfg)
     b.close_credit_spread(_pos("Submitted", 2, qty=5))       # only 2 of 5 filled
     assert len(b.ib.placed) == 1 and b.ib.placed[0].totalQuantity == 2
+
+
+class _CloseTrade:
+    def __init__(self, status, remaining):
+        self.orderStatus = _Status(status, 0)
+        self.orderStatus.remaining = remaining
+        self.order = object()
+
+
+def test_escalate_sells_only_the_unfilled_remainder(cfg):
+    """A limit close that partially filled (2 of 5) must escalate the REMAINING 3 to market,
+    never the full 5 — else it over-sells into a phantom short (2026-07-08 incident class)."""
+    b = _broker(cfg)
+    pos = {"close_trade": _CloseTrade("Submitted", 3), "combo": object(), "quantity": 5}
+    b.escalate_close(pos)
+    assert len(b.ib.placed) == 1
+    assert b.ib.placed[0].action == "SELL" and b.ib.placed[0].totalQuantity == 3
+
+
+def test_escalate_is_noop_when_limit_fully_filled(cfg):
+    b = _broker(cfg)
+    ct = _CloseTrade("Submitted", 0)                          # remaining 0 => nothing left
+    res = b.escalate_close({"close_trade": ct, "combo": object(), "quantity": 5})
+    assert b.ib.placed == [] and res is ct

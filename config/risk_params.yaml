@@ -4,7 +4,12 @@ account:
   starting_equity: 10000     # used by SimBroker for paper trading
 
 per_trade:
-  risk_pct: 0.02             # fraction of equity risked per trade (max loss to SL)
+  # Capital treated as at-risk in the strategy. Position sizing AND the daily-loss halt are
+  # computed against this budget, NOT the full account NetLiq — a $1M paper balance made
+  # risk_pct sizing inert (always hit max_contracts) and the daily-loss halt unreachable.
+  risk_budget_usd: 100000    # 10% of the $1M paper account, treated as the trading sleeve.
+                             # Tune this to size up/down: qty ≈ risk_pct*budget/max_loss.
+  risk_pct: 0.02             # fraction of the risk budget risked per trade (max loss to SL)
   max_contracts: 5           # hard cap regardless of sizing math
   min_contracts: 1
 

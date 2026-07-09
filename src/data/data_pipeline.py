@@ -118,7 +118,10 @@ def build_snapshot(cfg, bars: pd.DataFrame, model=None) -> MarketSnapshot:
     # Prior 5 bars (exclude the latest) so a breakout of the range is meaningful.
     high5 = float(bars["high"].iloc[-6:-1].max()) if len(bars) > 1 else price
     low5 = float(bars["low"].iloc[-6:-1].min()) if len(bars) > 1 else price
-    vwap = price * (1 + float(frow["vwap_dev"]))
+    # vwap_dev = (price - vwap)/vwap  (see feature_engineering), so vwap = price/(1 + vwap_dev).
+    # Was price*(1 + vwap_dev), which placed VWAP on the WRONG side of price and inverted the
+    # bull-put/bear-call selection (sold into the drift). Fixed 2026-07-09.
+    vwap = price / (1 + float(frow["vwap_dev"]))
 
     return MarketSnapshot(
         timestamp=bars.index[-1].to_pydatetime(),

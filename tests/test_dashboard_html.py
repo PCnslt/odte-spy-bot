@@ -57,8 +57,8 @@ def test_pnl_comes_from_account_ledger_not_book(tmp_path, monkeypatch):
          "orphans": 0},
     ])
     body = render_body(str(tmp_path / "t.db"))
-    assert "$1,000,014" in body                            # account value tile
-    assert "$-72" in body                                  # Total P&L = ledger delta (rounded)
+    assert "$1,000,014.40" in body                         # account value tile (cents)
+    assert "$-71.60" in body                               # Total P&L = ledger delta, to cents
     assert "$300" not in body and "$+300" not in body      # book cumulative never shown
     assert "Trade log" in body and "Bull put" in body      # trades still listed as detail
     assert "<svg" in body                                  # account-value curve drawn

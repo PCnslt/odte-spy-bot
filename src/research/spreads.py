@@ -165,7 +165,7 @@ def simulate(cfg, bars, features, probs, poly, include_vix, allow_dates=None,
         price = float(closes[i])
         snap = MarketSnapshot(
             timestamp=idx_utc[i].to_pydatetime(), spy_price=price, spy_volume=float(vols[i]),
-            vwap=price * (1 + float(frow["vwap_dev"])), atr_5min=float(frow["atr_5"]),
+            vwap=price / (1 + float(frow["vwap_dev"])), atr_5min=float(frow["atr_5"]),  # vwap=price/(1+dev)
             rvol=float(frow["rvol"]),
             high_5min=float(highs[max(i - 5, 0):i].max()) if i else price,
             low_5min=float(lows[max(i - 5, 0):i].min()) if i else price,
