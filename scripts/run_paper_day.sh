@@ -78,6 +78,10 @@ echo "$(date +%H:%M) Gateway authenticated — starting the session."
 # Live local dashboard: a SEPARATE read-only process (own IBKR client id) that auto-refreshes
 # so you can watch the session live at http://127.0.0.1:8080. Cannot affect trading; killed
 # at session end. Failure to start never affects the session.
+# First clear any stale livedash from a prior run: it holds IBKR client id 46 AND port 8080, so
+# a fresh one would collide (no live SPY/NetLiq + can't bind 8080) — the recurring "I don't see
+# the live dashboard" cause. It's read-only, so killing it is safe.
+pkill -f "src\.livedash" 2>/dev/null && sleep 2 || true
 "$REPO/venv/bin/python" -m src.livedash --port 8080 >>"$LOG" 2>&1 &
 LIVEDASH_PID=$!
 echo "$(date +%H:%M) Live dashboard at http://127.0.0.1:8080 (pid $LIVEDASH_PID)"
