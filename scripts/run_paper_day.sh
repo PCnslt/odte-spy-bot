@@ -104,6 +104,15 @@ echo "=== $(date) cost-meta-labeler retrain ==="
 echo "=== $(date) death-spiral monitor ==="
 "$REPO/venv/bin/python" -m src.monitor --db "$REPO/trades.db" || true
 
+# Reconciliation: does the book match the broker? Runs while the Gateway is still up so it can
+# read the real account (NetLiq, RealizedPnL, orphaned legs) and compare to trades.db. Appends
+# the NetLiq ledger (one row/day -> day-over-day P&L truth the dashboard shows) and marks any
+# never-filled dangling entry rows cancelled. Added after the 2026-07-08 phantom-short incident.
+echo "=== $(date) reconciliation (book vs broker) ==="
+"$REPO/venv/bin/python" -m src.reconcile --resolve --db "$REPO/trades.db" \
+  --ledger "$REPO/logs/netliq.jsonl" --port 4002 \
+  --report-file "$REPO/logs/reconcile_$(date +%Y%m%d).txt" || true
+
 # Dashboard: regenerate LOCALLY from trades.db. Deliberately NO git commit/push: this host is
 # a pull-only deploy mirror. Pushing from here caused (a) local commits that diverged from
 # origin and wedged the morning pull, and (b) an EOD hang on the osxkeychain credential helper
