@@ -172,8 +172,9 @@ def render_body(db_path: str = "trades.db") -> str:
         ("Account value", _money(net_liq), "idle", "IBKR PAPER",
          "Real paper-account balance (NetLiq)." if net_liq is not None
          else "Awaiting first reconciliation."),
-        ("Total P&amp;L", _money(total_pnl, signed=True), pnl_cls, "REAL",
-         f"Account change since {since}." if since else "—"),
+        ("Total P&amp;L", _money(total_pnl, signed=True), pnl_cls, "ALL-TIME",
+         (f"NAV minus your ${ledger[0]['net_liq']:,.0f} deposit (since {since})."
+          if ledger else "—")),
         ("Trades closed", str(n_closed), "idle", "TO DATE",
          f"Defined-risk credit spreads · {len(sessions)} sessions."),
         ("Open positions", str(open_legs), "good" if open_legs == 0 else "warn",
