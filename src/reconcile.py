@@ -181,6 +181,31 @@ def upsert_netliq_ledger(path: str, entry: dict) -> None:
             fh.write(json.dumps(e) + "\n")
 
 
+def ground_truth_snapshot(ledger_path: str = "logs/netliq.jsonl") -> Optional[dict]:
+    """The account's real state for the dashboards to show INSTEAD of trusting the book.
+    From the NetLiq ledger: the latest day's actual account value, the day-over-day P&L
+    (real NetLiq change — the honest number), the bot's book P&L for the same day, and the
+    gap between them. None if the ledger has no usable entries yet.
+
+    This is the antidote to overclaiming: on 2026-07-08 the book said +$156 while the account
+    fell $158; a dashboard reading only trades.db would have shown a profit that wasn't real."""
+    rows = [e for e in read_netliq_ledger(ledger_path) if e.get("net_liq") is not None]
+    if not rows:
+        return None
+    rows.sort(key=lambda e: (e.get("date", ""), e.get("ts", "")))
+    cur = rows[-1]
+    prev = next((e for e in reversed(rows[:-1])
+                 if e.get("date", "") < cur.get("date", "")), None)
+    actual = round(cur["net_liq"] - prev["net_liq"], 2) if prev else None
+    book = cur.get("book_net")
+    gap = round((book - actual), 2) if (actual is not None and book is not None) else None
+    return {"date": cur.get("date"), "ts": cur.get("ts"), "net_liq": cur["net_liq"],
+            "prev_date": prev.get("date") if prev else None,
+            "prev_net_liq": prev["net_liq"] if prev else None,
+            "actual_pnl": actual, "book_pnl": book, "gap": gap,
+            "orphans": cur.get("orphans", 0), "n_closed": cur.get("n_closed")}
+
+
 def prior_netliq(ledger: list[dict], day: date) -> Optional[dict]:
     """Baseline for a day-over-day P&L delta: the most recent ledger entry with a net_liq
     whose DATE is strictly before `day`. Same-day entries are ignored, so re-running today

@@ -22,10 +22,11 @@ from datetime import datetime
 from pathlib import Path
 
 from .briefing import briefing
+from .reconcile import prior_netliq, read_netliq_ledger
 from .session_chart import parse_log_events, render_svg, tail_activity, trade_events
 
 REFRESH_S = 12
-_STATE: dict = {"spy": [], "ts": None}
+_STATE: dict = {"spy": [], "ts": None, "netliq": None}
 
 _CSS = """
 :root{--ink:#0e141b;--panel:#151d27;--line:#27323f;--text:#d8dee7;--muted:#8894a3;--faint:#5b6773;
@@ -55,18 +56,28 @@ font-family:var(--mono);font-size:12px;line-height:1.7;max-height:320px;overflow
 """
 
 
-def _pull_spy(host: str, port: int) -> list[tuple[float, float]]:
-    """Today's RTH SPY 1-min series from IBKR as [(minute_since_open, close)]. Main thread only."""
+def _pull_live(host: str, port: int) -> tuple[list[tuple[float, float]], float | None]:
+    """One IBKR connection, two reads: today's RTH SPY 1-min series AND the live account
+    NetLiquidation (ground truth for the live P&L card). Main thread only. Returns
+    ([(minute_since_open, close)], net_liq_or_None)."""
     from .data.ibkr_feed import IBKRFeed
     f = IBKRFeed(host=host, port=port, client_id=46, symbol="SPY")
     try:
         f.connect()
+        net_liq = None
+        try:
+            for r in f.ib.accountSummary():
+                if r.tag == "NetLiquidation":
+                    net_liq = float(r.value)
+                    break
+        except Exception:
+            pass
         bars = f.latest_bars(lookback_minutes=400)
         if bars.empty:
-            return []
+            return [], net_liq
         et = bars.index.tz_convert("America/New_York")
         pts = [((t.hour - 9) * 60 + t.minute - 30, float(c)) for t, c in zip(et, bars["close"])]
-        return [p for p in pts if 0 <= p[0] <= 390]
+        return [p for p in pts if 0 <= p[0] <= 390], net_liq
     finally:
         try:
             f.disconnect()
@@ -107,6 +118,17 @@ def build_html(db_path: str = "trades.db", log_dir: str = "logs", day=None,
     ec = {"🟢": "var(--good)", "🟠": "var(--warn)", "🔴": "var(--crit)"}.get(b["emoji"], "var(--good)")
     now_px = f"${spy[-1][1]:.2f}" if spy else "—"
     pnl = st["pnl"]
+    # GROUND TRUTH: live account NetLiq vs yesterday's close = the real intraday P&L (ticks with
+    # the account). The book "P&L today" is what the bot THINKS it made; this is what actually
+    # happened — the two diverged by $314 on 2026-07-08 (phantom short). Never show book alone.
+    netliq = _STATE.get("netliq")
+    baseline = prior_netliq(read_netliq_ledger(f"{log_dir}/netliq.jsonl"), day)
+    actual_pnl = (round(netliq - baseline["net_liq"], 2)
+                  if (netliq is not None and baseline) else None)
+    nl_txt = f"${netliq:,.0f}" if netliq is not None else "—"
+    ap_txt = f"${actual_pnl:+,.0f}" if actual_pnl is not None else "—"
+    ap_col = "var(--muted)" if actual_pnl is None else (
+        "var(--good)" if actual_pnl >= 0 else "var(--crit)")
     logs = "".join(f'<div><span class="t">{t}</span>{msg}</div>'
                    for t, msg in tail_activity(text, 40)) or "<div>No activity logged yet.</div>"
     upd = _STATE["ts"].strftime("%H:%M:%S") if _STATE["ts"] else "—"
@@ -119,9 +141,11 @@ def build_html(db_path: str = "trades.db", log_dir: str = "logs", day=None,
   <div class="bl" style="border-left:3px solid {ec}"><span style="font-size:19px">{b['emoji']}</span>
     <div class="b"><b>{b['headline']}</b></div></div>
   <div class="grid">
+    <div class="card"><div class="l">Account NetLiq</div><div class="v">{nl_txt}</div></div>
+    <div class="card"><div class="l">Actual P&amp;L today</div><div class="v" style="color:{ap_col}">{ap_txt}</div></div>
     <div class="card"><div class="l">SPY now</div><div class="v">{now_px}</div></div>
     <div class="card"><div class="l">Trades today</div><div class="v">{st['n']}</div></div>
-    <div class="card"><div class="l">P&amp;L today</div><div class="v" style="color:{'var(--good)' if pnl>=0 else 'var(--crit)'}">${pnl:,.0f}</div></div>
+    <div class="card"><div class="l">Book P&amp;L today</div><div class="v" style="color:{'var(--good)' if pnl>=0 else 'var(--crit)'}">${pnl:,.0f}</div></div>
     <div class="card"><div class="l">Open now</div><div class="v">{st['open']}</div></div>
     <div class="card"><div class="l">Halts today</div><div class="v">{n_halt}</div></div>
   </div>
@@ -174,7 +198,7 @@ def main() -> None:
     print(f"Live dashboard: http://127.0.0.1:{a.port}  (Ctrl-C to stop)")
     while True:                                   # SPY refresh on the MAIN thread (ib_insync)
         try:
-            _STATE["spy"] = _pull_spy(a.host, a.ibport)
+            _STATE["spy"], _STATE["netliq"] = _pull_live(a.host, a.ibport)
         except Exception:
             pass
         _STATE["ts"] = datetime.now()

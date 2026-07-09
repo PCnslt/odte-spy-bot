@@ -16,6 +16,7 @@ from pathlib import Path
 from .briefing import briefing
 from .dashboard import _equity_svg, _rows
 from .monitor import death_spiral_check
+from .reconcile import ground_truth_snapshot
 from .session_chart import build_session_svg, tail_activity
 from .session_log import read_sessions
 from .utils.holdout import ledger_status
@@ -101,6 +102,32 @@ def render_body(db_path: str = "trades.db") -> str:
     pill, _sem, dot = _flag_style(ds["flag"], n)
     now = datetime.now().strftime("%Y-%m-%d %H:%M ET")
 
+    # GROUND TRUTH: what the broker account actually did, vs the bot's book. This exists so the
+    # page can never overclaim — trades.db said +$156 on 2026-07-08 while the account fell $158.
+    gt = ground_truth_snapshot()
+    gt_html = ""
+    if gt and gt.get("net_liq") is not None:
+        material = gt.get("gap") is not None and abs(gt["gap"]) > 25
+        gcol = "var(--crit)" if material else "var(--good)"
+        gicon = "⚖️" if material else "✅"
+        if gt.get("actual_pnl") is None:
+            verdict = "First anchor recorded — day-over-day truth starts next session."
+            mid = f'Account NetLiq <b>${gt["net_liq"]:,.2f}</b> · {gt["date"]}'
+        else:
+            ap, bp = gt["actual_pnl"], (gt["book_pnl"] or 0.0)
+            orph = (f' · {gt["orphans"]} residual leg(s) at snapshot'
+                    if gt.get("orphans") else "")
+            verdict = (f'GAP ${gt["gap"]:+,.2f} — book over-states; see reconciliation{orph}.'
+                       if material else "RECONCILED — book matches the account.")
+            mid = (f'Account NetLiq <b>${gt["net_liq"]:,.2f}</b> · '
+                   f'actual P&amp;L <b style="color:{gcol}">${ap:+,.2f}</b> '
+                   f'vs bot book ${bp:+,.2f}  ({gt.get("prev_date","?")}→{gt["date"]})')
+        gt_html = (
+            f'<div class="bottomline" style="border-left:3px solid {gcol};margin-top:12px">'
+            f'<span class="e" aria-hidden="true">{gicon}</span>'
+            f'<div class="b"><b>Account truth</b><br>{mid}'
+            f'<span class="do" style="color:{gcol}">{verdict}</span></div></div>')
+
     # experiment counts (real)
     def cnt(pred):
         return sum(1 for r in rows if pred(r))
@@ -123,12 +150,25 @@ def render_body(db_path: str = "trades.db") -> str:
         f'<tr><td class="h">{hid}</td><td>{what}</td><td class="n">{c}</td>'
         f'<td class="lock">{dec}</td></tr>' for hid, what, c, dec in exp_rows)
 
-    tiles = [
+    # Account NetLiq tile leads when we have broker truth — the real number, not the book.
+    _gt_tiles = []
+    if gt and gt.get("net_liq") is not None:
+        _ap = gt.get("actual_pnl")
+        _apv = f"${_ap:+,.0f}" if _ap is not None else "—"
+        _apc = "idle" if _ap is None else ("good" if _ap >= 0 else "crit")
+        _gt_tiles = [
+            ("Account NetLiq", f"${gt['net_liq']:,.0f}", "good", "ACTUAL", "var(--accent)",
+             f"Real IBKR paper balance · {gt['date']}."),
+            ("Actual P&amp;L (last session)", _apv, _apc, "GROUND TRUTH", "var(--accent)",
+             "Real NetLiq change — the honest number." if _ap is not None
+             else "Anchored; day-over-day truth next session."),
+        ]
+    tiles = _gt_tiles + [
         ("Live trades", str(n), "idle" if n == 0 else "good",
          "WAITING" if n == 0 else "LIVE", "var(--idle)" if n == 0 else "var(--good)",
          "First fills pending the next session." if n == 0 else f"{wins} winners so far."),
-        ("Net P&amp;L (paper)", f"${net:,.0f}", "good" if net >= 0 else "crit",
-         "PAPER", "var(--accent)", "Cumulative, paper account. Not real money."),
+        ("Book net P&amp;L", f"${net:,.0f}", "good" if net >= 0 else "crit",
+         "BOT-RECORDED", "var(--idle)", "What the bot logged. Cross-checked in Account truth."),
         ("Win rate", f"{win_rate:.0%}" if n else "—", "idle" if n == 0 else "good",
          f"n={n}", "var(--idle)", "Share of closed trades in profit."),
         ("Death-spiral monitor", "—" if ds["flag"] == "INSUFFICIENT" else f"{ds['ci_hi']:+.1f}",
@@ -236,6 +276,7 @@ def render_body(db_path: str = "trades.db") -> str:
     <div class="b"><b>{b['headline']}</b><br>{b['text'].splitlines()[1]}
       <span class="do" style="color:{emoji_color}">WHAT TO DO → {b['action']}</span></div>
   </div>
+  {gt_html}
 
   <div class="grid">{tiles_html}</div>
   {chart}
