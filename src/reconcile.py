@@ -284,7 +284,11 @@ def reconcile(day: Optional[date] = None, db_path: str = "trades.db",
 
     ledger = read_netliq_ledger(ledger_path)
     baseline = prior_netliq(ledger, day)   # yesterday's close, never a same-day snapshot
-    if broker.available and broker.net_liq is not None:
+    # Only record the ledger snapshot when reconciling the CURRENT day: live NetLiq is "now", so
+    # attaching it to a past --date would mislabel today's balance as that day's close and poison
+    # the day-over-day P&L (e.g. a 9:50am `--date yesterday` run overwriting yesterday's settled
+    # close with a balance that already contains today's trades). Past days only get reported.
+    if broker.available and broker.net_liq is not None and day == now.date():
         upsert_netliq_ledger(ledger_path, {
             "date": day.isoformat(), "ts": now.isoformat(timespec="seconds"),
             "net_liq": broker.net_liq, "realized_pnl": broker.realized_pnl,

@@ -102,3 +102,31 @@ def test_report_book_only_when_broker_down(tmp_path):
     book = book_snapshot(_db(tmp_path), __import__("datetime").date(2026, 7, 8))
     rep = build_report(book, BrokerSnap(False, note="Gateway down"), None)
     assert "UNAVAILABLE" in rep and "Gateway down" in rep
+
+
+def test_past_date_reconcile_does_not_overwrite_ledger(tmp_path, monkeypatch):
+    """A --date <pastday> run reports but must NOT record live NetLiq as that day's close —
+    otherwise a 9:50am run would clobber yesterday's settled figure with a balance that already
+    contains today's trades."""
+    from datetime import datetime
+    import src.reconcile as R
+    db = _db(tmp_path)
+    ledger = str(tmp_path / "netliq.jsonl")
+    R.upsert_netliq_ledger(ledger, {"date": "2026-07-07", "ts": "2026-07-07T16:00:00",
+                                    "net_liq": 1_000_086.0})
+    R.upsert_netliq_ledger(ledger, {"date": "2026-07-08", "ts": "2026-07-09T03:20:00",
+                                    "net_liq": 1_000_014.40})   # settled close
+    monkeypatch.setattr(R, "broker_snapshot",
+                        lambda *a, **k: BrokerSnap(True, ts="x", net_liq=999_500.0))
+
+    # reconcile the PAST day at 9:50am today — must leave the 2026-07-08 entry untouched
+    R.reconcile(date(2026, 7, 8), db_path=db, ledger_path=ledger,
+                now=datetime(2026, 7, 9, 9, 50))
+    jul8 = [r for r in read_netliq_ledger(ledger) if r["date"] == "2026-07-08"][0]
+    assert jul8["net_liq"] == 1_000_014.40                      # NOT the 999,500 live pull
+
+    # reconcile the CURRENT day — that one SHOULD record
+    R.reconcile(date(2026, 7, 9), db_path=db, ledger_path=ledger,
+                now=datetime(2026, 7, 9, 16, 0))
+    assert any(r["date"] == "2026-07-09" and r["net_liq"] == 999_500.0
+               for r in read_netliq_ledger(ledger))
