@@ -508,6 +508,29 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
             # 1. Manage open spreads on real leg prices (incl. strike defense); EOD flatten.
             _manage_spreads(now, spot=price, force=(t >= flatten_t))
 
+            # 1b. CONTINUOUS BROKER-TRUTH RECONCILIATION. If the book thinks we are flat but the
+            # account still holds SPY legs or shares, that is unmanaged risk — a prior breach's
+            # assignment, a crashed order, an untracked fill. Sweep it, and REFUSE new entries
+            # until the broker confirms flat. The startup sweep only *places* orders; a
+            # pre-market stock order often won't fill, and we must never stack a fresh spread on
+            # top of an unhedged assigned position.
+            unmanaged = []
+            if not open_spreads:
+                try:
+                    unmanaged = broker.orphan_positions()
+                except Exception as exc:
+                    log.error("Broker-truth check failed: %s", exc)
+                if unmanaged:
+                    log.critical("UNMANAGED: %d broker position(s) with an empty book — "
+                                 "sweeping; entries BLOCKED until flat.", len(unmanaged))
+                    alerter.send(f"CRITICAL: {len(unmanaged)} unmanaged SPY position(s) at the "
+                                 f"broker. Sweeping; new entries blocked until flat.",
+                                 level="CRITICAL")
+                    try:
+                        broker.flatten_orphans()
+                    except Exception as exc:
+                        log.error("Unmanaged-position sweep failed: %s", exc)
+
             # Scheduler mode: once the session is over and everything is flat, exit for the day.
             if daily and t >= close_t and not open_spreads:
                 # Belt-and-suspenders: never end the day leaving a real position the book lost
@@ -521,8 +544,9 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                 log.info("Session over (%s); daily mode exiting.", t)
                 break
 
-            # 2. New entries inside the session window only.
-            if open_t <= t < no_new_t:
+            # 2. New entries inside the session window only — and never while the account holds
+            # something we aren't managing (see 1b).
+            if open_t <= t < no_new_t and not unmanaged:
                 # Opening-gap guard (once per session): a big overnight gap means a violent
                 # open the warming-up anomaly detector can't see yet — sit the day out.
                 if gap_day != now.date():
