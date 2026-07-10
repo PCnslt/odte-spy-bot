@@ -171,11 +171,14 @@ class IBKRBroker(Broker):
             qty = held.get(cid, 0)
             if not qty:
                 continue
+            working = self.working_qty(cid)          # never stack on a live order
+            if working >= abs(qty):
+                continue
             leg.exchange = leg.exchange or self.exchange
             action = "SELL" if qty > 0 else "BUY"
-            self.ib.placeOrder(leg, MarketOrder(action, abs(qty)))
+            self.ib.placeOrder(leg, MarketOrder(action, abs(qty) - working))
             log.warning("LEG-LEVEL close: %s %s x%d", action,
-                        getattr(leg, "localSymbol", "") or cid, abs(qty))
+                        getattr(leg, "localSymbol", "") or cid, abs(qty) - working)
             sent += 1
         return sent
 
@@ -415,6 +418,30 @@ class IBKRBroker(Broker):
         return filled, credit
 
     # --- orphan reconciliation (self-audit R6: crash recovery) ----------------------
+    def working_qty(self, con_id) -> int:
+        """Quantity ALREADY working at the broker for this contract.
+
+        Idempotency guard. The per-poll reconciliation sweeps every 30s; pre-market a stock
+        MarketOrder does not fill but can sit held, so a naive sweep would stack a fresh order
+        each poll and then fill ALL of them at the open — turning a 200-share cover into a
+        multi-thousand-share position. Never place what is already working."""
+        total = 0
+        try:
+            trades = self.ib.openTrades()
+        except Exception:
+            return 0
+        for t in trades:
+            try:
+                if int(getattr(t.contract, "conId", 0) or 0) != int(con_id):
+                    continue
+                if t.isDone():
+                    continue
+            except Exception:
+                continue
+            rem = t.orderStatus.remaining
+            total += int(rem if rem is not None else (t.order.totalQuantity or 0))
+        return total
+
     def orphan_positions(self) -> list:
         """Real SPY positions the process isn't managing — orphaned option legs (after a crash
         or a close that never confirmed) AND shares from a 0DTE assignment. All unmanaged risk.
@@ -437,17 +464,28 @@ class IBKRBroker(Broker):
         from ib_insync import MarketOrder
 
         orphans = self.orphan_positions()
+        sent = 0
         for p in orphans:
             c = p.contract
+            need = abs(int(p.position))
+            # IDEMPOTENT: never stack a second cover on top of one already working. The per-poll
+            # sweep runs every 30s; pre-market a stock MarketOrder is held rather than filled, so
+            # re-sending would queue N covers that ALL fill at the open.
+            working = self.working_qty(getattr(c, "conId", 0))
+            if working >= need:
+                log.info("ORPHAN %s: %d already working at broker; not re-sending.",
+                         getattr(c, "localSymbol", "") or c.symbol, working)
+                continue
             # Assigned shares route to SMART; option legs keep their options exchange.
             c.exchange = "SMART" if getattr(c, "secType", "") == "STK" \
                 else (c.exchange or self.exchange)
             action = "SELL" if p.position > 0 else "BUY"
-            self.ib.placeOrder(c, MarketOrder(action, abs(int(p.position))))
+            qty = need - working
+            self.ib.placeOrder(c, MarketOrder(action, qty))
             log.warning("ORPHAN flattened: %s %s %s x%d", action,
-                        getattr(c, "secType", ""), getattr(c, "localSymbol", "") or c.symbol,
-                        abs(int(p.position)))
-        return len(orphans)
+                        getattr(c, "secType", ""), getattr(c, "localSymbol", "") or c.symbol, qty)
+            sent += 1
+        return sent
 
     def disconnect(self) -> None:
         if self.ib is not None:

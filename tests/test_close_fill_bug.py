@@ -74,6 +74,9 @@ class _FakeIB:
     def positions(self):
         return []
 
+    def openTrades(self):
+        return []
+
 
 def _broker(cfg):
     b = IBKRBroker(cfg, mode="paper")
@@ -182,6 +185,35 @@ def test_flatten_orphans_ignores_flat_and_other_symbols(cfg):
                               _Position("STK", "QQQ", -100, 2),
                               _Position("OPT", cfg.symbol, 1, 3)]
     assert b.flatten_orphans() == 1
+
+
+class _WorkingTrade:
+    def __init__(self, con_id, remaining):
+        self.contract = type("C", (), {"conId": con_id})()
+        self.orderStatus = _Status("Submitted", 0)
+        self.orderStatus.remaining = remaining
+        self.order = type("O", (), {"totalQuantity": remaining})()
+
+    def isDone(self):
+        return False
+
+
+def test_flatten_orphans_never_stacks_orders(cfg):
+    """The per-poll sweep runs every 30s. Pre-market a stock MarketOrder is HELD, not filled —
+    re-sending would queue N covers that all fill at the open and flip us massively long."""
+    b = _broker(cfg)
+    b.ib.positions = lambda: [_Position("STK", cfg.symbol, -200, 1)]
+    b.ib.openTrades = lambda: [_WorkingTrade(1, 200)]     # a 200-share cover already working
+    assert b.flatten_orphans() == 0
+    assert b.ib.placed == []                               # nothing re-sent
+
+
+def test_flatten_orphans_tops_up_a_partial_cover(cfg):
+    b = _broker(cfg)
+    b.ib.positions = lambda: [_Position("STK", cfg.symbol, -200, 1)]
+    b.ib.openTrades = lambda: [_WorkingTrade(1, 50)]       # only 50 working of the 200 needed
+    assert b.flatten_orphans() == 1
+    assert (b.ib.placed[0].action, b.ib.placed[0].totalQuantity) == ("BUY", 150)
 
 
 # --- broker truth ---------------------------------------------------------------------------
