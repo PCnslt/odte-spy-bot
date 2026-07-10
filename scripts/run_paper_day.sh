@@ -47,12 +47,16 @@ else
   echo "WARN: git fetch timed out/failed — running the last-deployed local code."
 fi
 
-# Audit M3: never trade freshly pulled code that fails its own tests — revert and run the
-# last-known-good commit instead (fail closed, but still trade the proven version).
+# Never trade code that fails its own tests. This used to revert to the pre-pull commit and
+# TRADE IT — but "the last-known-good version" is just yesterday's code, which is exactly where
+# the bugs that lost money live. Failing tests now mean: revert the tree, flatten the account,
+# and sit the day out. Fail CLOSED.
+TESTS_OK=1
 if [ "$(git rev-parse HEAD)" != "$PRE_PULL" ]; then
   if ! "$REPO/venv/bin/python" -m pytest -q >/dev/null 2>&1; then
-    echo "ERROR: tests FAILED on pulled code — reverting to pre-pull commit $PRE_PULL."
+    echo "ERROR: tests FAILED on pulled code — reverting to $PRE_PULL and REFUSING to trade."
     git reset --hard "$PRE_PULL"
+    TESTS_OK=0
   else
     echo "Pulled $(git rev-parse --short HEAD); tests pass."
   fi
@@ -73,8 +77,17 @@ until nc -z 127.0.0.1 4002 2>/dev/null && \
   echo "$(date +%H:%M) Gateway down or logged out; retrying in 120s (log into IB Gateway to start immediately)."
   caffeinate -i sleep 120
 done
-echo "$(date +%H:%M) Gateway authenticated — starting the session."
+echo "$(date +%H:%M) Gateway authenticated."
 
+# Fail CLOSED on a red test suite: make the account safe, then sit the day out. Exit 0 so
+# launchd's KeepAlive(SuccessfulExit=false) does not thrash us into a relaunch loop.
+if [ "$TESTS_OK" -eq 0 ]; then
+  echo "$(date +%H:%M) TESTS FAILED — flattening any open position and NOT trading today."
+  caffeinate -i "$REPO/venv/bin/python" -m src.main --flatten --mode paper || true
+  exit 0
+fi
+
+echo "$(date +%H:%M) Starting the session."
 # caffeinate -i: keep the Mac from idle-sleeping while the session runs.
 caffeinate -i "$REPO/venv/bin/python" -m src.main --mode paper --daily
 rc=$?
