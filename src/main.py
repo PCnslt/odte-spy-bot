@@ -384,6 +384,32 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                 else:
                     open_spreads.remove(pos)
                 continue
+
+            # STRIKE DEFENSE — evaluated on the UNDERLYING, and deliberately ABOVE the
+            # option-quote guard. It is the ONLY exit that does not depend on option quotes,
+            # which this Gateway serves 15 MINUTES DELAYED (marketDataType=3, verified
+            # 2026-07-10). If SPY reaches the short strike, get out now — quote or no quote.
+            # It used to sit below `cost is None`, so a missing/stale quote skipped the brake
+            # at precisely the moment it was needed: that path is how 2026-07-09's breach rode
+            # to expiry and assigned into naked short stock.
+            if (intel.get("defense_enabled", False) and spot is not None
+                    and defense_triggered(pos["spread"]["kind"], spot,
+                                          float(pos["spread"]["short"].strike),
+                                          intel.get("defense_buffer_pct", 0.001))):
+                log.warning("STRIKE DEFENSE: spot %.2f threatens short %.0f (%s) — market exit.",
+                            spot, float(pos["spread"]["short"].strike), pos["spread"]["kind"])
+                alerter.send(f"STRIKE DEFENSE: exiting {pos['spread']['kind']} "
+                             f"(spot {spot:.2f} vs short {float(pos['spread']['short'].strike):.0f})",
+                             level="WARN")
+                tr = broker.close_credit_spread(pos)   # urgent -> market
+                if tr is not None:
+                    pos.update(close_trade=tr, close_since=now, close_reason="strike_defense",
+                               close_cost=(cost if cost is not None else credit),
+                               close_market=True)
+                else:
+                    open_spreads.remove(pos)
+                continue
+
             if cost is None:
                 continue
             tp_cost = credit * (1 - pt_frac)
@@ -392,15 +418,7 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
             reason = None
             if cost <= tp_cost:
                 reason, cost = "take_profit", tp_cost
-            elif (intel.get("defense_enabled", False) and spot is not None
-                  and defense_triggered(
-                      pos["spread"]["kind"], spot, float(pos["spread"]["short"].strike),
-                      intel.get("defense_buffer_pct", 0.001))):
-                # Underlying is AT the short strike: exit on mechanics, don't wait for the
-                # premium stop. Default OFF — OOS decomposition showed whipsaw losses near
-                # static strikes (PF 0.50); enable only with range-placed strikes.
-                reason = "strike_defense"
-            elif cost >= sl_cost:
+            elif cost >= sl_cost:                       # strike_defense handled above, on spot
                 reason, cost = "stop_loss", sl_cost
             elif now - pos["open_time"] >= max_hold:
                 reason = "time_stop"

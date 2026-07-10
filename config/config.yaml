@@ -94,7 +94,13 @@ model:
 # guard are ON: they only avoid costs, never add risk. See docs/AI_REVIEW.md.
 intelligence:
   use_range_strikes: false     # place short strike beyond forecast range x safety (OOS: hurts in calm regimes)
-  defense_enabled: false       # close when spot nears the short strike (OOS: whipsaws near static strikes)
+  # ON since 2026-07-10. This is the ONLY exit that does not depend on option quotes, which this
+  # Gateway serves 15 MINUTES DELAYED (marketDataType=3, verified live). It closes on the
+  # UNDERLYING reaching the short strike, so a breach can never ride to expiry -> assignment
+  # (2026-07-09). OOS showed it whipsaws near static strikes (PF 0.50) — i.e. it will convert
+  # some winners into small losses. That trade is deliberate: many small losses beat one naked
+  # overnight short. Turn OFF only once exits run on live (non-delayed) quotes.
+  defense_enabled: true        # close when spot nears the short strike
   # EV (premium-richness) gate: sell only when credit x [pt(1-p) - (stop-1)p] >= min_ev,
   # p = nightly-trained P(spot reaches the short strike within the horizon).
   # OOS verdict (90d): gate kept the WORSE half of trades (PF 0.70 vs 0.94) — the breach
@@ -136,11 +142,11 @@ execution:
   # it fails the runner's pytest gate, which then reverts to the previous commit and trades
   # with the OLD code. This flag is read only by the live entry gate.
   #
-  # Set false on 2026-07-10: the order-lifecycle rewrite has never executed live, Thursday's
-  # breach assigned into short stock that isn't confirmed cleared, and exits can still be priced
-  # off delayed quotes (reqMarketDataType(3)) while the stale-data HALT is dead-wired — the
-  # exact defect that let that breach go unmanaged. RESTORE TO true once those are fixed.
-  entries_enabled: false
+  # 2026-07-10 11:30: re-enabled by Shawn. The assignment was covered and the account confirmed
+  # flat. Option quotes are still 15-min DELAYED, so trading is only acceptable together with
+  # intelligence.defense_enabled — a stop that fires on the UNDERLYING price, not on the stale
+  # option quote. Do not enable entries without it.
+  entries_enabled: true
   ibkr:
     host: "127.0.0.1"
     # IB GATEWAY ports (installed on this machine): paper=4002, live=4001.
