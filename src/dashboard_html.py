@@ -126,7 +126,9 @@ def _money(v, signed=False, cents=False):
     return f"${v:+,.{dp}f}" if signed else f"${v:,.{dp}f}"
 
 
-def render_body(db_path: str = "trades.db") -> str:
+def render_body(db_path: str = "trades.db", live=None) -> str:
+    """`live` is an optional reconcile.BrokerSnap. When present and available, the account value
+    and open-position tiles come from the BROKER right now instead of the last EOD ledger row."""
     rows = _rows(db_path)
     ds = death_spiral_check(db_path)
     sessions = read_sessions()
@@ -136,8 +138,15 @@ def render_body(db_path: str = "trades.db") -> str:
 
     # --- account truth (the authoritative money numbers) --------------------------------
     net_liq = ledger[-1]["net_liq"] if ledger else None
-    total_pnl = round(net_liq - ledger[0]["net_liq"], 2) if ledger else None
     open_legs = int(ledger[-1].get("orphans") or 0) if ledger else 0
+    acct_chip, live_pos = "IBKR PAPER", []
+    if live is not None and getattr(live, "available", False) and live.net_liq is not None:
+        net_liq = live.net_liq                       # broker truth beats the last EOD row
+        live_pos = list(live.orphans or [])
+        open_legs = len(live_pos)
+        acct_chip = "LIVE"
+    total_pnl = (round(net_liq - ledger[0]["net_liq"], 2)
+                 if (ledger and net_liq is not None) else None)
     # per-day P&L = that day's NetLiq minus the previous tracked day's NetLiq
     daily: dict[str, float] = {}
     for i, e in enumerate(ledger):
@@ -162,7 +171,7 @@ def render_body(db_path: str = "trades.db") -> str:
     pnl_cls = "idle" if total_pnl is None else ("good" if total_pnl >= 0 else "crit")
     since = ledger[0]["date"][5:].replace("-", "/") if ledger else None   # MM/DD
     tiles = [
-        ("Account value", _money(net_liq, cents=True), "idle", "IBKR PAPER"),
+        ("Account value", _money(net_liq, cents=True), "idle", acct_chip),
         ("Total P&amp;L", _money(total_pnl, signed=True, cents=True), pnl_cls,
          f"SINCE {since}" if since else "—"),
         ("Trades closed", str(n_closed), "idle", f"{len(sessions)} SESSIONS"),
@@ -175,6 +184,23 @@ def render_body(db_path: str = "trades.db") -> str:
         f'<span class="chip">{chip}</span></div>'
         f'<div class="val {cls}">{val}</div></div>'
         for lab, val, cls, chip in tiles)
+
+    # --- open positions right now (broker truth) ---------------------------------------
+    openpos_html = ""
+    if live_pos:
+        tr = ""
+        for o in live_pos:
+            sec = o.get("secType", "OPT")
+            what = (f"{o['localSymbol']}" if sec == "STK"
+                    else f"{o['localSymbol']} {o.get('right','')} {o.get('strike',0):.0f}")
+            tr += (f'<tr><td class="h">{sec}</td><td>{what}</td>'
+                   f'<td class="n">{o["position"]:+d}</td>'
+                   f'<td class="n">${o["avgCost"]:,.2f}</td></tr>')
+        openpos_html = (
+            '<section class="sec"><span class="eyebrow">Open positions — live, at the broker'
+            '</span><div class="tablewrap"><table><thead><tr><th>Type</th><th>Contract</th>'
+            '<th>Qty</th><th>Avg cost</th></tr></thead>'
+            f'<tbody>{tr}</tbody></table></div></section>')
 
     # --- account value curve -----------------------------------------------------------
     acct_pts = [(e["date"], e["net_liq"]) for e in ledger]
@@ -288,6 +314,7 @@ def render_body(db_path: str = "trades.db") -> str:
   </div>
 
   <div class="grid">{tiles_html}</div>
+  {openpos_html}
   {acct_html}
   {tape_html}
   {hist_html}
@@ -309,27 +336,48 @@ function showDay(d){{
 </script>"""
 
 
-def render_page(db_path: str = "trades.db") -> str:
+def render_page(db_path: str = "trades.db", live=None) -> str:
     return ("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
             "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
             "<title>ODTE-SPY-BOT — status</title></head>"
             "<body style=\"margin:0;background:#0e141b\">"
-            + render_body(db_path) + "</body></html>")
+            + render_body(db_path, live=live) + "</body></html>")
 
 
-def generate(db_path: str = "trades.db", out_path: str = "docs/dashboard/status.html") -> Path:
+def generate(db_path: str = "trades.db", out_path: str = "docs/dashboard/status.html",
+             live=None) -> Path:
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(render_page(db_path))
+    out.write_text(render_page(db_path, live=live))
     return out
+
+
+def _live_snapshot(host: str, port: int, symbol: str):
+    """Read-only broker snapshot for the account/open-position tiles. Fail-soft: on any error
+    the dashboard falls back to the last EOD ledger row."""
+    try:
+        from .reconcile import broker_snapshot
+        return broker_snapshot(host, port, symbol, client_id=57)
+    except Exception:
+        return None
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Generate the HTML status dashboard")
     p.add_argument("--db", default="trades.db")
     p.add_argument("--out", default="docs/dashboard/status.html")
+    p.add_argument("--live", action="store_true",
+                   help="read the account + open positions from IBKR instead of the last "
+                        "EOD ledger row (read-only; falls back if the Gateway is down)")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=4002)
+    p.add_argument("--symbol", default="SPY")
     a = p.parse_args()
-    print(f"HTML dashboard written: {generate(a.db, a.out)}")
+    live = _live_snapshot(a.host, a.port, a.symbol) if a.live else None
+    if a.live:
+        print("live broker snapshot:",
+              "OK" if (live and live.available) else "unavailable (using EOD ledger)")
+    print(f"HTML dashboard written: {generate(a.db, a.out, live=live)}")
 
 
 if __name__ == "__main__":

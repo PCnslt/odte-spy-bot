@@ -130,8 +130,10 @@ echo "=== $(date) dashboard (local regen; no push) ==="
 # Durable per-day history (trades, P&L, halts, SPY range) — accumulates in logs/sessions.jsonl.
 "$REPO/venv/bin/python" -m src.session_log --record --date "$(date +%Y-%m-%d)" \
   --db "$REPO/trades.db" --logs "$REPO/logs" || true
+# --live: account value + open positions come from the BROKER, not the last EOD ledger row
+# (falls back to the ledger if the Gateway is already down).
 "$REPO/venv/bin/python" -m src.dashboard_html --db "$REPO/trades.db" \
-  --out "$REPO/docs/dashboard/status.html" || true
+  --out "$REPO/docs/dashboard/status.html" --live --port 4002 || true
 # Archive today's dashboard snapshot so each day is preserved, not overwritten.
 mkdir -p "$REPO/docs/dashboard/history"
 cp "$REPO/docs/dashboard/status.html" \

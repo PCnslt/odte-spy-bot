@@ -113,11 +113,20 @@ def broker_snapshot(host: str, port: int, symbol: str, client_id: int = 47,
     except Exception as exc:  # pragma: no cover - ib_insync always present in runtime venv
         return BrokerSnap(False, note=f"ib_insync unavailable: {exc}")
     ib = IB()
-    try:
-        ib.connect(host, port, clientId=client_id, timeout=15)
-    except Exception as exc:
+    # 15s was too short: the Gateway can be slow to hand off a fresh clientId and we'd report
+    # "unavailable" spuriously. That matters — the morning backstop and the resolve-guard both
+    # treat "unavailable" as "cannot prove flat". Retry once on a different clientId.
+    last = None
+    for cid in (client_id, client_id + 100):
+        try:
+            ib.connect(host, port, clientId=cid, timeout=25)
+            last = None
+            break
+        except Exception as exc:
+            last = exc
+    if last is not None:
         return BrokerSnap(False, ts=now.isoformat(timespec="seconds"),
-                          note=f"IBKR Gateway not reachable on {host}:{port} ({exc}); "
+                          note=f"IBKR Gateway not reachable on {host}:{port} ({last!r}); "
                                "broker truth unavailable — book-only report.")
     try:
         summary = {r.tag: r.value for r in ib.accountSummary()}
@@ -125,9 +134,16 @@ def broker_snapshot(host: str, port: int, symbol: str, client_id: int = 47,
         orphans = []
         for p in ib.positions():
             c = p.contract
-            if getattr(c, "secType", "") == "OPT" and c.symbol == symbol and p.position:
-                orphans.append({"localSymbol": c.localSymbol, "right": c.right,
-                                "strike": float(c.strike), "position": int(p.position),
+            # OPT *and* STK: a breached 0DTE short leg assigns into SHARES. An OPT-only check
+            # reported "FLAT" while the account was short 200 SPY (2026-07-10) — and the
+            # resolve-guard + the morning backstop both read this field.
+            if c.symbol == symbol and p.position \
+                    and getattr(c, "secType", "") in ("OPT", "STK"):
+                orphans.append({"secType": getattr(c, "secType", ""),
+                                "localSymbol": c.localSymbol or c.symbol,
+                                "right": getattr(c, "right", "") or "",
+                                "strike": float(getattr(c, "strike", 0) or 0),
+                                "position": int(p.position),
                                 "avgCost": round(float(p.avgCost), 2)})
         try:
             n_fills = len(ib.fills())
@@ -254,13 +270,18 @@ def build_report(book: BookSnap, broker: BrokerSnap, baseline: Optional[dict]) -
         if broker.unrealized_pnl is not None:
             L.append(f"  UnrealizedPnL ...... ${broker.unrealized_pnl:+,.2f}")
         if broker.orphans:
-            L.append(f"  Open {broker.orphans[0].get('localSymbol','')[:3] or 'SPY'} option "
-                     f"legs: {len(broker.orphans)}  ⚠ NOT FLAT — unmanaged risk:")
+            L.append(f"  Open SPY positions: {len(broker.orphans)}  "
+                     f"⚠ NOT FLAT — unmanaged risk:")
             for o in broker.orphans:
-                L.append(f"    {o['localSymbol']} {o['right']} {o['strike']:.0f} "
-                         f"x{o['position']:+d}")
+                sec = o.get("secType", "")
+                if sec == "STK":
+                    L.append(f"    STK {o['localSymbol']} x{o['position']:+d} "
+                             f"@ {o['avgCost']:.2f}   (assigned shares)")
+                else:
+                    L.append(f"    OPT {o['localSymbol']} {o.get('right','')} "
+                             f"{o.get('strike',0):.0f} x{o['position']:+d}")
         else:
-            L.append("  Open SPY option legs: 0   [OK — flat]")
+            L.append("  Open SPY positions: 0   [OK — flat]")
         L.append(f"  Fills on record: {broker.n_fills}")
     L.append("")
     # TRUTH: day-over-day NetLiq delta vs book
