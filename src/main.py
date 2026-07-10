@@ -423,6 +423,12 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                 else:  # entry was never filled; nothing to unwind
                     open_spreads.remove(pos)
 
+    entries_enabled = bool(cfg.execution.get("entries_enabled", True))
+    if not entries_enabled:
+        log.warning("ENTRIES DISABLED (execution.entries_enabled=false): the bot will sweep, "
+                    "manage, flatten, reconcile and publish — but open NO new positions.")
+        alerter.send("Bot starting in OBSERVE-ONLY mode: no new entries.", level="WARN")
+
     alerter.send(f"Bot starting: IBKR {mode} on port {port} — CREDIT SPREADS "
                  f"(width ${sp.width}, PT {pt_frac:.0%}, stop {stop_mult}x)")
 
@@ -544,9 +550,9 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                 log.info("Session over (%s); daily mode exiting.", t)
                 break
 
-            # 2. New entries inside the session window only — and never while the account holds
-            # something we aren't managing (see 1b).
-            if open_t <= t < no_new_t and not unmanaged:
+            # 2. New entries inside the session window only — never while the account holds
+            # something we aren't managing (1b), and never when the entry kill switch is off.
+            if open_t <= t < no_new_t and not unmanaged and entries_enabled:
                 # Opening-gap guard (once per session): a big overnight gap means a violent
                 # open the warming-up anomaly detector can't see yet — sit the day out.
                 if gap_day != now.date():

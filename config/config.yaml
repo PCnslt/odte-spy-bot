@@ -130,6 +130,17 @@ execution:
   mode: paper                # paper | live (CLI --mode overrides)
   live_confirmed: false      # MUST be true AND --mode live to send real-money orders
   poll_seconds: 30           # live loop cadence
+  # KILL SWITCH for new positions. false => the bot still starts, connects, sweeps unmanaged
+  # positions, manages/flattens anything open, reconciles and publishes — but opens NOTHING.
+  # Deliberately NOT max_trades_per_day: that is a risk limit the tests assert on, and zeroing
+  # it fails the runner's pytest gate, which then reverts to the previous commit and trades
+  # with the OLD code. This flag is read only by the live entry gate.
+  #
+  # Set false on 2026-07-10: the order-lifecycle rewrite has never executed live, Thursday's
+  # breach assigned into short stock that isn't confirmed cleared, and exits can still be priced
+  # off delayed quotes (reqMarketDataType(3)) while the stale-data HALT is dead-wired — the
+  # exact defect that let that breach go unmanaged. RESTORE TO true once those are fixed.
+  entries_enabled: false
   ibkr:
     host: "127.0.0.1"
     # IB GATEWAY ports (installed on this machine): paper=4002, live=4001.
