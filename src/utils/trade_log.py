@@ -68,8 +68,15 @@ class TradeLog:
                    "p_bad_fill REAL"]    # shadow P(BAD_FILL); observational, gates nothing
 
     def __init__(self, db_path: str | Path = "trades.db"):
-        self._conn = sqlite3.connect(str(db_path))
+        self._conn = sqlite3.connect(str(db_path), timeout=30.0)
         self._conn.row_factory = sqlite3.Row
+        # WAL + an explicit busy timeout: the live loop writes while reconcile/monitor/dashboard
+        # read. Default rollback journal + a 5s implicit timeout raised "database is locked".
+        try:
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA busy_timeout=30000")
+        except sqlite3.OperationalError:
+            pass
         self._conn.executescript(_SCHEMA)
         for col in self._MIGRATIONS:
             try:
@@ -109,6 +116,17 @@ class TradeLog:
             " limit_exit=? WHERE id=?",
             (closed_at, exit_reason, exit_cost_est, exit_cost_fill, credit_fill,
              entry_slip, exit_slip, pnl, 1 if limit_exit else 0, trade_id))
+        self._conn.commit()
+
+    def mark_unconfirmed(self, trade_id: int, *, closed_at: str,
+                         exit_reason: str = "unconfirmed_eod") -> None:
+        """Close the row WITHOUT a P&L, because the position could not be confirmed flat at the
+        broker. Any number written here would be fiction: on 2026-07-09 the exit cost fell back
+        to the entry credit, so a real ~-$400 loss was booked as -$5.20. pnl stays NULL and every
+        money aggregate must skip it — the NetLiq ledger carries the truth."""
+        self._conn.execute(
+            "UPDATE trades SET closed_at=?, exit_reason=?, pnl=NULL WHERE id=?",
+            (closed_at, exit_reason, trade_id))
         self._conn.commit()
 
     # --- analysis ---------------------------------------------------------------

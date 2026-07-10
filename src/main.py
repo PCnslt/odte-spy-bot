@@ -22,7 +22,7 @@ from .research.spreads import SpreadTrade
 from .data.data_pipeline import build_snapshot
 from .data.ibkr_feed import IBKRFeed
 from .execution.ibkr_broker import IBKRBroker
-from .execution.position_manager import PositionManager
+from .execution.position_manager import RISK_STATE_PATH, PositionManager
 from .execution.risk import (assign_arm, defense_triggered, gap_exceeds, liquidity_ok,
                              spread_ev, stop_cost)
 from .learning.anomaly_detector import AnomalyAction, AnomalyDetector
@@ -188,7 +188,9 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                      f"prior crash.", level="WARN")
 
     siggen = SignalGenerator(cfg)
-    pm = PositionManager(cfg)
+    # Durable daily guardrails: the halt / trade-cap / loss-brake must survive a watchdog
+    # force-exit + launchd relaunch, otherwise a crash re-arms a fresh loss budget.
+    pm = PositionManager(cfg, state_path=RISK_STATE_PATH)
     monitor = PerformanceMonitor()
     anomaly = AnomalyDetector(cfg)
 
@@ -296,19 +298,39 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                 elif pos.get("close_market", False):
                     waited = (now - pos["close_since"]).total_seconds()
                     if now.time() >= close_t:
-                        # Session over and the market close still hasn't confirmed. We cannot
-                        # keep a 0DTE position open past expiry — sweep any real broker leg,
-                        # record from the estimate (the NetLiq ledger carries the money truth),
-                        # and stop tracking so the day closes out. Any assignment that still
-                        # slips through is caught by the STK-aware startup orphan sweep.
-                        log.error("Market close never confirmed by session end; sweeping "
-                                  "orphans then recording. Position may assign overnight.")
+                        # Session over and the close still hasn't confirmed. Escalate to PER-LEG
+                        # market exits — a deep-ITM leg makes the BAG illiquid even though each
+                        # leg still trades — then demand BROKER PROOF of flat before letting go.
+                        log.error("Close unconfirmed at session end; escalating to per-leg exits.")
                         try:
-                            broker.flatten_orphans()
+                            broker.close_legs_individually(pos)
                         except Exception as exc:
-                            log.error("EOD orphan sweep failed: %s", exc)
-                        _record_close(pos, pos["close_cost"], pos["close_reason"], now,
-                                      exit_cost_est=pos["close_cost"], limit_exit=False)
+                            log.error("Per-leg close failed: %s", exc)
+                        flat = False
+                        try:
+                            flat = broker.confirm_flat(broker.spread_con_ids(pos), timeout=10.0)
+                        except Exception as exc:
+                            log.error("confirm_flat failed: %s", exc)
+                        if not flat:
+                            log.critical("NOT FLAT at session end — 0DTE assignment risk.")
+                            alerter.send(
+                                f"CRITICAL: {pos['spread']['kind']} x{pos['quantity']} is NOT "
+                                f"FLAT at session end — 0DTE assignment risk tonight. "
+                                f"Run `python -m src.main --flatten`.", level="CRITICAL")
+                        # NEVER fabricate a P&L for a close we could not confirm. On 2026-07-09
+                        # the exit cost fell back to the entry credit, booking a real ~-$400 loss
+                        # as -$5.20. Record it as UNKNOWN (pnl NULL); the NetLiq ledger carries
+                        # the money truth. Feed the risk halt the WORST case so it errs toward
+                        # stopping, never toward trading on a loss it can't see.
+                        worst = -abs((pos["spread"]["width"] - pos["credit"])
+                                     * 100 * pos["quantity"])
+                        pm.record_result(worst)
+                        if pos.get("trade_id") is not None:
+                            try:
+                                tradelog.mark_unconfirmed(pos["trade_id"],
+                                                          closed_at=now.isoformat())
+                            except Exception as exc:
+                                log.warning("mark_unconfirmed failed: %s", exc)
                         open_spreads.remove(pos)
                     elif waited > 90:
                         # Unconfirmed but the session is STILL OPEN: re-send the close and keep
@@ -408,34 +430,74 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
     # relaunches us. A hung (non-exiting) process defeats the crash-restart net. Heartbeat is
     # bumped at the top of every iteration; a stall well beyond one poll means we're wedged.
     import os as _os
+    import signal as _signal
     import threading as _threading
     _hb = [_time.time()]
+    _shutdown = [False]
     _stall_s = max(150.0, 4.0 * poll)
 
     def _watchdog() -> None:
         while True:
             _time.sleep(30)
+            if _shutdown[0]:
+                return          # never force-exit while the emergency flatten is running
             if _loop_stalled(_hb[0], _time.time(), _stall_s):
                 log.error("WATCHDOG: trading loop stalled %.0fs (>%ds) — forcing exit for "
                           "relaunch.", _time.time() - _hb[0], int(_stall_s))
                 _os._exit(1)
     _threading.Thread(target=_watchdog, daemon=True, name="watchdog").start()
 
+    def _emergency_drain() -> None:
+        """Flatten everything and prove it, bumping the heartbeat so the watchdog can't kill us
+        mid-flatten. Used by SIGTERM/SIGINT and by ANY unhandled loop error."""
+        _shutdown[0] = True
+        try:
+            for _ in range(5):
+                _hb[0] = _time.time()
+                _manage_spreads(datetime.now(), force=True)
+                if not open_spreads:
+                    break
+                _time.sleep(2)
+            if open_spreads:
+                log.warning("%d close(s) unconfirmed at shutdown; sweeping orphans.",
+                            len(open_spreads))
+                broker.flatten_orphans()
+        except Exception as exc:
+            log.error("Emergency flatten failed: %s — run `python -m src.main --flatten`.", exc)
+
+    # launchd sends SIGTERM on logout/restart/bootout. Python's default disposition kills the
+    # process immediately — `finally` never runs and live 0DTE positions are stranded into
+    # expiry. Route SIGTERM into the same drain path as Ctrl-C.
+    def _on_sigterm(_sig, _frame):
+        log.warning("SIGTERM received — flattening before exit.")
+        raise KeyboardInterrupt
+    try:
+        _signal.signal(_signal.SIGTERM, _on_sigterm)
+    except (ValueError, OSError):  # not the main thread
+        pass
+
     try:
         while True:
             now = datetime.now()
             _hb[0] = _time.time()
             t = now.time()
+            bars = None
             try:
                 bars = feed.latest_bars(lookback_minutes=120)
             except Exception as exc:
                 log.error("Data fetch failed: %s", exc)
-                if once:
+            if bars is None or bars.empty:
+                # A market-data outage must NEVER strand an open 0DTE position. Previously the
+                # loop `continue`d here, skipping the whole management state machine — including
+                # the 15:55 flatten — while the watchdog stayed green. Manage positions anyway:
+                # the force-flatten path markets out without needing a quote.
+                if open_spreads:
+                    log.warning("No market data; still managing %d open position(s).",
+                                len(open_spreads))
+                _manage_spreads(now, spot=None, force=(t >= flatten_t))
+                if daily and t >= close_t and not open_spreads:
+                    log.info("Session over (%s, no data); daily mode exiting.", t)
                     break
-                _time.sleep(poll)
-                continue
-            if bars.empty:
-                log.warning("No bars returned.")
                 if once:
                     break
                 _time.sleep(poll)
@@ -564,6 +626,15 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                                                      " P(breach)=%.2f)", kind, ev,
                                                      spread["credit"], p_b)
                                             spread = None
+                                # A crossed/garbage quote can make credit >= width. That is not a
+                                # free trade — it's bad data, and `// max_loss` would raise
+                                # ZeroDivisionError, crash the loop, and (via relaunch) reset the
+                                # daily risk counters. Refuse the trade instead.
+                                if spread and (spread["width"] - spread["credit"]) * 100 <= 0:
+                                    log.warning("Skipped %s: credit %.2f >= width %.2f — bad "
+                                                "quote, non-positive max loss.", kind,
+                                                spread["credit"], spread["width"])
+                                    spread = None
                                 if spread and spread["credit"] >= sp.min_credit:
                                     max_loss = (spread["width"] - spread["credit"]) * 100
                                     qty = max(1, min(max_ct, int(
@@ -689,21 +760,18 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
             if once:
                 break
             _time.sleep(poll)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         log.info("Interrupted; flattening.")
-        _manage_spreads(datetime.now(), force=True)
-        for _ in range(4):  # brief drain so market closes record their actual fills
-            _time.sleep(2)
-            _manage_spreads(datetime.now(), force=True)
-        if open_spreads:
-            # R8 #6: don't leave it to tomorrow — sweep actual account legs now.
-            log.warning("%d close(s) unconfirmed at interrupt; sweeping orphans.",
-                        len(open_spreads))
-            try:
-                broker.flatten_orphans()
-            except Exception as exc:
-                log.error("Orphan sweep failed: %s — run `python -m src.main --flatten`.",
-                          exc)
+        _emergency_drain()
+    except Exception as exc:
+        # Any unexpected error used to fall straight through `finally` (which only disconnects),
+        # leaving live 0DTE positions to expire into assignment. Drain first, then re-raise.
+        log.critical("Unhandled error in trading loop: %s — emergency flatten.", exc,
+                     exc_info=True)
+        alerter.send(f"CRITICAL: bot crashed ({exc}); emergency flatten attempted.",
+                     level="CRITICAL")
+        _emergency_drain()
+        raise
     finally:
         rep = monitor.report()
         alerter.send(f"Session end: {rep.pretty()}")
@@ -734,6 +802,9 @@ def main() -> None:
         raise SystemExit(0 if healthcheck(cfg, mode) else 1)
     if args.flatten:
         broker = IBKRBroker(cfg, mode=mode)
+        # Distinct client id: reusing the live session's id (17) would kick the running bot off
+        # its connection -> watchdog exit -> relaunch.
+        broker.client_id = 48
         broker.connect()
         n = broker.flatten_orphans()
         broker.disconnect()

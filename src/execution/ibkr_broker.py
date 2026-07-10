@@ -13,6 +13,7 @@ CAVEATS (read before trusting this with money):
 """
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -53,14 +54,130 @@ class IBKRBroker(Broker):
         self.ib = IB()
         self.ib.connect(self.host, self.port, clientId=self.client_id, timeout=15)
         self.ib.reqMarketDataType(3)  # delayed-frozen fallback if no live subscription
+        self._assert_account_matches_mode()
         log.info("IBKR broker connected (%s) on %s:%d", self.mode, self.host, self.port)
         return True
+
+    def _assert_account_matches_mode(self) -> None:
+        """The port is only a CONVENTION — whatever account the Gateway is logged into is the
+        account we trade. IBKR paper accounts start with 'D' (e.g. DU…/DUR…); live accounts do
+        not. Without this check, a Gateway logged into the LIVE account on the paper port would
+        happily send real-money 0DTE orders under `--mode paper`. Fail closed."""
+        accounts = [a for a in (self.ib.managedAccounts() or []) if a]
+        if not accounts:
+            raise RuntimeError("IBKR returned no managed accounts — refusing to trade.")
+        is_paper = all(a.upper().startswith("D") for a in accounts)
+        if self.mode == "paper" and not is_paper:
+            self.ib.disconnect()
+            raise RuntimeError(
+                f"REFUSING TO TRADE: --mode paper but the Gateway on port {self.port} is logged "
+                f"into non-paper account(s) {accounts}. Paper accounts start with 'D'.")
+        if self.mode == "live" and is_paper:
+            raise RuntimeError(
+                f"--mode live but account(s) {accounts} look like PAPER accounts. Refusing.")
+        log.info("Account check OK: mode=%s accounts=%s", self.mode, accounts)
 
     def account_value(self) -> float:
         for row in self.ib.accountSummary():
             if row.tag == "NetLiquidation":
                 return float(row.value)
-        return float(self.cfg.risk["account"]["starting_equity"])
+        # Never silently substitute a config number for the real balance — a missing NetLiq tag
+        # means the connection is broken/mis-authed, and the fallback made healthcheck pass.
+        raise RuntimeError("NetLiquidation unavailable from IBKR — connection not healthy.")
+
+    # --- broker-truth primitives ----------------------------------------------------
+    # Every incident this bot has had came from the same root: local state was trusted over
+    # the broker. `ib.sleep(0)` is ONE event-loop tick with no network round-trip, so it can
+    # never confirm a cancel; and `orderStatus.status == "Filled"` misses Cancelled/ApiCancelled
+    # while PendingCancel/Inactive are neither active nor done. These helpers make "did it
+    # actually happen at IBKR?" answerable.
+    DONE_STATES = ("Filled", "Cancelled", "ApiCancelled")
+
+    def _await_terminal(self, trade, timeout: float = 5.0) -> Optional[str]:
+        """Pump the event loop until `trade` reaches a TRUE terminal state (or timeout).
+        This is what makes a cancel observable — without it, a fill in flight during the cancel
+        is invisible and we over-sell (phantom short) or drop a live position."""
+        if trade is None:
+            return None
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                if trade.isDone():
+                    break
+            except Exception:
+                if trade.orderStatus.status in self.DONE_STATES:
+                    break
+            self.ib.waitOnUpdate(timeout=0.25)
+        return trade.orderStatus.status
+
+    @staticmethod
+    def _filled_qty(trade) -> int:
+        """Filled quantity from the ACTUAL executions, falling back to orderStatus."""
+        try:
+            return int(trade.filled())
+        except Exception:
+            return int(trade.orderStatus.filled or 0)
+
+    @staticmethod
+    def _remaining_qty(trade) -> int:
+        """Un-executed remainder. Sizing a replacement from order.totalQuantity instead of this
+        is the classic over-sell bug."""
+        try:
+            return int(trade.remaining())
+        except Exception:
+            rem = trade.orderStatus.remaining
+            return int(rem) if rem is not None else 0
+
+    def positions_for(self, con_ids) -> dict:
+        """Broker truth: net position per conId (0 when flat)."""
+        self.ib.sleep(0)
+        out = {int(c): 0 for c in con_ids if c}
+        for p in self.ib.positions():
+            cid = int(getattr(p.contract, "conId", 0) or 0)
+            if cid in out:
+                out[cid] = int(p.position)
+        return out
+
+    def confirm_flat(self, con_ids, timeout: float = 5.0) -> bool:
+        """Poll ib.positions() until every conId is flat. This — not order status — is the only
+        acceptable proof that a spread is closed before we drop it from the book."""
+        con_ids = [int(c) for c in con_ids if c]
+        if not con_ids:
+            return True
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if all(v == 0 for v in self.positions_for(con_ids).values()):
+                return True
+            self.ib.waitOnUpdate(timeout=0.25)
+        return all(v == 0 for v in self.positions_for(con_ids).values())
+
+    @staticmethod
+    def spread_con_ids(pos: dict) -> list:
+        sp = pos.get("spread") or {}
+        return [getattr(sp.get("short"), "conId", None), getattr(sp.get("long"), "conId", None)]
+
+    def close_legs_individually(self, pos: dict) -> int:
+        """Last resort when the COMBO won't fill (deep-ITM legs make the BAG illiquid even
+        though each leg trades). Combos fill leg-by-leg and can end up single-legged, so read
+        per-leg broker truth and close exactly what we actually hold. Returns orders sent."""
+        from ib_insync import MarketOrder
+
+        sp = pos.get("spread") or {}
+        legs = [sp.get("short"), sp.get("long")]
+        held = self.positions_for([getattr(l, "conId", None) for l in legs])
+        sent = 0
+        for leg in legs:
+            cid = int(getattr(leg, "conId", 0) or 0)
+            qty = held.get(cid, 0)
+            if not qty:
+                continue
+            leg.exchange = leg.exchange or self.exchange
+            action = "SELL" if qty > 0 else "BUY"
+            self.ib.placeOrder(leg, MarketOrder(action, abs(qty)))
+            log.warning("LEG-LEVEL close: %s %s x%d", action,
+                        getattr(leg, "localSymbol", "") or cid, abs(qty))
+            sent += 1
+        return sent
 
     def _todays_expiry(self) -> str:
         return datetime.now().strftime("%Y%m%d")
@@ -185,10 +302,19 @@ class IBKRBroker(Broker):
             self.ib.waitOnUpdate(timeout=0.25)
             deadline -= 0.25
         status = trade.orderStatus.status
-        errors = [e.message for e in trade.log if e.errorCode not in (0, 399)]
-        if errors:
-            log.error("Spread order rejected: %s", errors)
+        # Rejection is decided by ORDER STATUS, never by "there is a log line". Many IBKR
+        # messages (2109 pre/post-RTH, 2137, order-held notices) are benign warnings that arrive
+        # while the order stays WORKING. Treating any of them as a rejection returned None while
+        # the order remained live at IBKR -> it could fill into an untracked, unmanaged 0DTE
+        # spread. Now: only a terminal-reject status kills it, and we cancel before giving up.
+        msgs = [f"{e.errorCode}:{e.message}" for e in trade.log if e.errorCode not in (0, 399)]
+        if status in ("Cancelled", "ApiCancelled", "Inactive"):
+            log.error("Spread order rejected (status=%s): %s", status, msgs)
+            self.ib.cancelOrder(order)          # belt & braces: ensure nothing is left working
+            self._await_terminal(trade, timeout=2.0)
             return None
+        if msgs:
+            log.warning("Spread order warnings (order still %s, TRACKING it): %s", status, msgs)
         log.info("Spread combo sent (%s x%d, min credit %.2f): %s",
                  spread["kind"], quantity, min_credit, status)
         return {"combo": combo, "order": order, "trade": trade, "spread": spread,
@@ -207,14 +333,17 @@ class IBKRBroker(Broker):
         # check, so instead of just cancelling we fired a MARKET SELL of a spread we never bought
         # -> a phantom SHORT position + P&L that didn't match the broker. Now: cancel any entry
         # still working, then only ever unwind the quantity that truly filled (0 -> do nothing).
-        st = pos["trade"].orderStatus
-        if st.status not in ("Filled", "Cancelled", "ApiCancelled", "Inactive"):
+        entry = pos["trade"]
+        if entry.orderStatus.status not in self.DONE_STATES:
             self.ib.cancelOrder(pos["order"])
-            self.ib.sleep(0)  # let the cancel/any-final-fill settle
-        filled_qty = int(pos["trade"].orderStatus.filled or 0)
+            # Wait for a REAL terminal state. `ib.sleep(0)` is one event-loop tick with no
+            # network round-trip, so a fill racing the cancel was invisible — we'd read
+            # filled=0 and drop a live position (or over-sell it).
+            self._await_terminal(entry, timeout=5.0)
+        filled_qty = self._filled_qty(entry)
         if filled_qty <= 0:
             log.info("Spread entry unfilled (status=%s); cancelled, nothing to unwind.",
-                     pos["trade"].orderStatus.status)
+                     entry.orderStatus.status)
             return None
         pos["_unwound_qty"] = filled_qty   # caller records this size, not the requested qty
         if filled_qty != pos["quantity"]:
@@ -236,18 +365,20 @@ class IBKRBroker(Broker):
 
         ct = pos.get("close_trade")
         qty = int(pos["quantity"])
-        if ct is not None and ct.orderStatus.status not in ("Filled", "Cancelled"):
-            # Market out ONLY what the limit close didn't already fill. Selling the full
-            # requested qty when part had filled would over-sell → phantom SHORT (incident class).
-            # Explicit None check, NOT `or`: remaining==0 is "fully filled", not "unknown".
-            rem = ct.orderStatus.remaining
-            qty = int(rem) if rem is not None else int(pos["quantity"])
-            self.ib.cancelOrder(ct.order)
+        if ct is not None:
+            if ct.orderStatus.status not in self.DONE_STATES:
+                self.ib.cancelOrder(ct.order)
+                # The cancel MUST settle before we read the remainder. Reading `remaining`
+                # before the cancel is confirmed lets a fill land in the gap → we then market
+                # out the full size on top of it → phantom SHORT.
+                self._await_terminal(ct, timeout=5.0)
+            # Size the replacement from the true un-executed remainder, never totalQuantity.
+            qty = self._remaining_qty(ct)
         if qty <= 0:
-            log.info("Limit close already fully filled; nothing to escalate.")
+            log.info("Close already fully filled; nothing to escalate.")
             return ct
         trade = self.ib.placeOrder(pos["combo"], MarketOrder("SELL", qty))
-        log.info("Limit close escalated to market x%d (of %d requested)", qty, pos["quantity"])
+        log.info("Close escalated to market x%d (of %d requested)", qty, pos["quantity"])
         return trade
 
     @staticmethod

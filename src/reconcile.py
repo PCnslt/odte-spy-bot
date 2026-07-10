@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
@@ -171,14 +172,21 @@ def read_netliq_ledger(path: str) -> list[dict]:
 def upsert_netliq_ledger(path: str, entry: dict) -> None:
     """One row per day: replace any existing entry for entry['date'] with this one, so
     re-running on the same day overwrites rather than piling up (which would poison the
-    day-over-day baseline and bloat the dashboard equity curve). Rows are kept date-sorted."""
+    day-over-day baseline and bloat the dashboard equity curve). Rows are kept date-sorted.
+
+    Written atomically (tmp + os.replace): this file is the P&L ground truth and is gitignored,
+    so a crash during an in-place truncate+rewrite would destroy every day of history."""
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     rows = [e for e in read_netliq_ledger(path) if e.get("date") != entry.get("date")]
     rows.append(entry)
     rows.sort(key=lambda e: (e.get("date", ""), e.get("ts", "")))
-    with open(path, "w") as fh:
+    tmp = f"{path}.tmp"
+    with open(tmp, "w") as fh:
         for e in rows:
             fh.write(json.dumps(e) + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
 
 
 def ground_truth_snapshot(ledger_path: str = "logs/netliq.jsonl") -> Optional[dict]:
@@ -296,12 +304,25 @@ def reconcile(day: Optional[date] = None, db_path: str = "trades.db",
             "orphans": len(broker.orphans), "source": "live"})
 
     resolved: list[int] = []
+    skip_note = ""
     if resolve:
-        resolved = resolve_dangling(db_path, now.isoformat(timespec="seconds"))
-        if resolved:
-            book = book_snapshot(db_path, day)  # refresh so the report shows them cleared
+        # NEVER zero a dangling row while the broker still holds positions, or while we cannot
+        # see the broker at all. A trade that FILLED but crashed before its close was recorded
+        # looks identical to a never-filled entry (credit_fill/pnl both NULL) — zeroing it would
+        # erase a real loss from every health surface. Flat-at-broker is the only safe proof.
+        if not broker.available:
+            skip_note = "RESOLVE SKIPPED: broker unavailable — cannot prove flat."
+        elif broker.orphans:
+            skip_note = (f"RESOLVE SKIPPED: {len(broker.orphans)} open leg(s) at the broker; "
+                         "a dangling row may be a REAL open position.")
+        else:
+            resolved = resolve_dangling(db_path, now.isoformat(timespec="seconds"))
+            if resolved:
+                book = book_snapshot(db_path, day)  # refresh so the report shows them cleared
 
     report = build_report(book, broker, baseline)
+    if skip_note:
+        report += f"\n\n{skip_note}"
     if resolved:
         report += f"\n\nRESOLVED: marked {len(resolved)} unfilled entry row(s) cancelled: " \
                   f"{', '.join('id=' + str(i) for i in resolved)}"

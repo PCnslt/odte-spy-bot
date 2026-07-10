@@ -6,7 +6,10 @@ entry premium and the option's own ATR (from Polygon bars in backtest, IBKR bars
 """
 from __future__ import annotations
 
+import json
+import os
 from datetime import date, datetime
+from pathlib import Path
 from typing import Optional
 
 from ..common import MarketSnapshot, OptionRight, Signal, TradeIntent
@@ -15,9 +18,17 @@ from .risk import RiskCalculator
 
 log = get_logger("position_manager")
 
+# Daily guardrails MUST survive a restart. The watchdog force-exits on a hung broker call and
+# launchd relaunches the same day — which used to rebuild PositionManager with halted=False,
+# trades_today=0, realized_pnl_today=0, re-arming a fresh loss budget after the halt had already
+# tripped. Persisted here and rehydrated on startup.
+RISK_STATE_PATH = "logs/risk_state.json"
+
 
 class PositionManager:
-    def __init__(self, cfg):
+    def __init__(self, cfg, state_path: str | Path | None = None):
+        # state_path=None => no persistence (backtests/tests). The live loop passes
+        # RISK_STATE_PATH so the halt/counters survive a crash+relaunch.
         self.cfg = cfg
         self.calc = RiskCalculator(cfg)
         limits = cfg.risk["limits"]
@@ -26,11 +37,48 @@ class PositionManager:
         self.max_concurrent = limits["max_concurrent_positions"]
         self.max_consecutive_losses = limits.get("max_consecutive_losses", 6)
 
+        self._state_path = Path(state_path) if state_path else None
         self._day: Optional[date] = None
         self.trades_today = 0
         self.realized_pnl_today = 0.0
         self.consecutive_losses = 0
         self.halted = False
+        self._load()
+
+    # --- durable daily state (survives crash / watchdog / relaunch) --------------
+    def _load(self) -> None:
+        if self._state_path is None:
+            return
+        try:
+            d = json.loads(self._state_path.read_text())
+        except Exception:
+            return
+        if d.get("date") != date.today().isoformat():
+            return  # stale day: start clean (a new session clears the pause, per config)
+        self._day = date.today()
+        self.trades_today = int(d.get("trades_today", 0))
+        self.realized_pnl_today = float(d.get("realized_pnl_today", 0.0))
+        self.consecutive_losses = int(d.get("consecutive_losses", 0))
+        self.halted = bool(d.get("halted", False))
+        log.warning("Restored daily risk state: trades=%d realized=%.2f halted=%s consec=%d",
+                    self.trades_today, self.realized_pnl_today, self.halted,
+                    self.consecutive_losses)
+
+    def _save(self) -> None:
+        if self._state_path is None:
+            return
+        try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._state_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps({
+                "date": (self._day or date.today()).isoformat(),
+                "trades_today": self.trades_today,
+                "realized_pnl_today": round(self.realized_pnl_today, 2),
+                "consecutive_losses": self.consecutive_losses,
+                "halted": self.halted}))
+            os.replace(tmp, self._state_path)   # atomic
+        except Exception as exc:
+            log.warning("Could not persist risk state: %s", exc)
 
     # --- daily bookkeeping -----------------------------------------------------
     def _roll_day(self, now: datetime) -> None:
@@ -43,10 +91,12 @@ class PositionManager:
             self.trades_today = 0
             self.realized_pnl_today = 0.0
             self.halted = False
+            self.consecutive_losses = 0   # "…until a manual restart or the next session"
+            self._save()
 
     def record_result(self, pnl: float) -> None:
         self.realized_pnl_today += pnl
-        # Consecutive-loss brake: counts across days, resets on any win.
+        # Consecutive-loss brake: resets on any win, and on a new session (_roll_day).
         if pnl < 0:
             self.consecutive_losses += 1
             if self.consecutive_losses >= self.max_consecutive_losses:
@@ -54,6 +104,7 @@ class PositionManager:
                             self.consecutive_losses)
         else:
             self.consecutive_losses = 0
+        self._save()
 
     def can_open(self, now: datetime, equity: float, open_count: int) -> tuple[bool, str]:
         self._roll_day(now)
@@ -67,6 +118,7 @@ class PositionManager:
             return False, "max_trades_per_day"
         if self.realized_pnl_today <= -self.max_daily_loss_pct * equity:
             self.halted = True
+            self._save()   # a halt MUST survive a watchdog force-exit + relaunch
             log.warning("Daily loss halt tripped: pnl=%.2f", self.realized_pnl_today)
             return False, "daily_loss_halt"
         return True, "ok"
@@ -102,3 +154,4 @@ class PositionManager:
 
     def on_open(self) -> None:
         self.trades_today += 1
+        self._save()
