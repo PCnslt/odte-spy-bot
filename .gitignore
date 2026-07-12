@@ -7,6 +7,14 @@ models/
 logs/
 *.db
 *.sqlite
+# SQLite WAL/SHM sidecars — transient runtime files. `*.db` does NOT match `trades.db-wal`.
+# If tracked, the runtime's `git reset --hard origin/main` would drop a STALE wal next to the
+# live DB (data risk). Never commit these.
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite-wal
+*.sqlite-shm
 
 # Python
 __pycache__/
