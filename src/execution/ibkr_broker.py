@@ -66,12 +66,15 @@ class IBKRBroker(Broker):
         accounts = [a for a in (self.ib.managedAccounts() or []) if a]
         if not accounts:
             raise RuntimeError("IBKR returned no managed accounts — refusing to trade.")
-        is_paper = all(a.upper().startswith("D") for a in accounts)
+        # Paper accounts are 'DU' (individual) or 'DF' (advisor/family). Bare 'D' would accept a
+        # live account that happens to start with D. False-reject is safe (bot just won't trade);
+        # false-accept sends real money — so match the specific paper prefixes.
+        is_paper = all(a.upper().startswith(("DU", "DF")) for a in accounts)
         if self.mode == "paper" and not is_paper:
             self.ib.disconnect()
             raise RuntimeError(
                 f"REFUSING TO TRADE: --mode paper but the Gateway on port {self.port} is logged "
-                f"into non-paper account(s) {accounts}. Paper accounts start with 'D'.")
+                f"into non-paper account(s) {accounts}. Paper accounts start with 'DU'/'DF'.")
         if self.mode == "live" and is_paper:
             raise RuntimeError(
                 f"--mode live but account(s) {accounts} look like PAPER accounts. Refusing.")
@@ -161,6 +164,15 @@ class IBKRBroker(Broker):
         though each leg trades). Combos fill leg-by-leg and can end up single-legged, so read
         per-leg broker truth and close exactly what we actually hold. Returns orders sent."""
         from ib_insync import MarketOrder
+
+        # Cancel any still-working COMBO close FIRST and wait for it to settle. A BAG order has
+        # conId 0, so working_qty (which matches per-leg conIds) can't see it — if we skip this,
+        # the working combo SELL and the per-leg covers can BOTH fill at the close and double-
+        # close us into the REVERSE spread, held overnight. This is the incident class.
+        ct = pos.get("close_trade")
+        if ct is not None and ct.orderStatus.status not in self.DONE_STATES:
+            self.ib.cancelOrder(ct.order)
+            self._await_terminal(ct, timeout=5.0)
 
         sp = pos.get("spread") or {}
         legs = [sp.get("short"), sp.get("long")]
@@ -425,6 +437,7 @@ class IBKRBroker(Broker):
         MarketOrder does not fill but can sit held, so a naive sweep would stack a fresh order
         each poll and then fill ALL of them at the open — turning a 200-share cover into a
         multi-thousand-share position. Never place what is already working."""
+        con_id = int(con_id)
         total = 0
         try:
             trades = self.ib.openTrades()
@@ -432,9 +445,14 @@ class IBKRBroker(Broker):
             return 0
         for t in trades:
             try:
-                if int(getattr(t.contract, "conId", 0) or 0) != int(con_id):
-                    continue
                 if t.isDone():
+                    continue
+                c = t.contract
+                # A working COMBO (BAG, conId 0) covers this leg if the leg is one of its legs.
+                # Without this, a still-working combo close is invisible and we double-cover.
+                leg_cids = {int(getattr(cl, "conId", 0) or 0)
+                            for cl in (getattr(c, "comboLegs", None) or [])}
+                if int(getattr(c, "conId", 0) or 0) != con_id and con_id not in leg_cids:
                     continue
             except Exception:
                 continue
@@ -462,6 +480,16 @@ class IBKRBroker(Broker):
         strictly worse than a realized exit. Expired option legs can't be traded and simply
         fall away at settlement; the stock they assign into is what this must catch."""
         from ib_insync import MarketOrder
+
+        # Cancel any still-working SPY order first (esp. a combo close, invisible to the per-leg
+        # idempotency guard) so this account-wide sweep can't race it into a double execution.
+        for t in list(self.ib.openTrades()):
+            try:
+                if getattr(t.contract, "symbol", "") == self.cfg.symbol and not t.isDone():
+                    self.ib.cancelOrder(t.order)
+                    self._await_terminal(t, timeout=3.0)
+            except Exception:
+                pass
 
         orphans = self.orphan_positions()
         sent = 0

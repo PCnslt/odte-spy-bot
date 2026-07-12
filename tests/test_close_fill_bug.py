@@ -216,6 +216,42 @@ def test_flatten_orphans_tops_up_a_partial_cover(cfg):
     assert (b.ib.placed[0].action, b.ib.placed[0].totalQuantity) == ("BUY", 150)
 
 
+class _WorkingCombo:
+    """A working BAG (combo) order: conId 0, but its legs cover the underlying leg conIds."""
+    def __init__(self, leg_cids, remaining):
+        legs = [type("L", (), {"conId": c})() for c in leg_cids]
+        self.contract = type("C", (), {"conId": 0, "comboLegs": legs, "symbol": "SPY"})()
+        self.orderStatus = _Status("Submitted", 0)
+        self.orderStatus.remaining = remaining
+        self.order = type("O", (), {"totalQuantity": remaining})()
+
+    def isDone(self):
+        return False
+
+
+def test_working_qty_sees_a_working_combo(cfg):
+    """A BAG close has conId 0; without expanding its legs the idempotency guard is blind to it
+    and would double-close (the reverse-spread-overnight bug)."""
+    b = _broker(cfg)
+    b.ib.openTrades = lambda: [_WorkingCombo([101, 102], 5)]
+    assert b.working_qty(101) == 5      # leg is covered by the working combo
+    assert b.working_qty(102) == 5
+    assert b.working_qty(999) == 0      # unrelated leg
+
+
+def test_close_legs_cancels_the_working_combo_first(cfg):
+    """Per-leg escalation must cancel the in-flight combo close before covering, or both fill and
+    double-close into the reverse spread held overnight."""
+    b = _broker(cfg)
+    short = type("C", (), {"conId": 101, "exchange": "", "localSymbol": "S"})()
+    long_ = type("C", (), {"conId": 102, "exchange": "", "localSymbol": "L"})()
+    ct = _Trade("Submitted", 0, total=5)                    # working combo close
+    b.ib.positions = lambda: [_Position("OPT", cfg.symbol, -2, 101)]   # only short leg held
+    b.close_legs_individually({"spread": {"short": short, "long": long_}, "close_trade": ct})
+    assert ct.orderStatus.status == "Cancelled"            # combo cancelled BEFORE covering
+    assert (b.ib.placed[0].action, b.ib.placed[0].totalQuantity) == ("BUY", 2)
+
+
 # --- broker truth ---------------------------------------------------------------------------
 def test_confirm_flat_is_broker_truth(cfg):
     b = _broker(cfg)

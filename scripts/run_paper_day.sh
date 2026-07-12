@@ -83,8 +83,14 @@ echo "$(date +%H:%M) Gateway authenticated."
 # launchd's KeepAlive(SuccessfulExit=false) does not thrash us into a relaunch loop.
 if [ "$TESTS_OK" -eq 0 ]; then
   echo "$(date +%H:%M) TESTS FAILED — flattening any open position and NOT trading today."
-  caffeinate -i "$REPO/venv/bin/python" -m src.main --flatten --mode paper || true
-  exit 0
+  # --flatten exits non-zero if it could NOT confirm the account flat. Do NOT swallow that.
+  if caffeinate -i "$REPO/venv/bin/python" -m src.main --flatten --mode paper; then
+    echo "$(date +%H:%M) Account confirmed flat; sitting the day out."
+  else
+    echo "$(date +%H:%M) CRITICAL: could NOT confirm the account is flat after a red suite. "\
+"A position may be unmanaged — check IB Gateway and run: python -m src.main --flatten"
+  fi
+  exit 0   # exit 0 regardless so launchd KeepAlive does not thrash relaunches
 fi
 
 echo "$(date +%H:%M) Starting the session."

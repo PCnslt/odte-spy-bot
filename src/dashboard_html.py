@@ -152,8 +152,10 @@ def render_body(db_path: str = "trades.db", live=None) -> str:
     for i, e in enumerate(ledger):
         daily[e["date"]] = round(e["net_liq"] - ledger[i - 1]["net_liq"], 2) if i else 0.0
 
-    # real closed trades (exclude the reconciled-unfilled bookkeeping rows — not real fills)
-    trades = [r for r in rows if r.get("exit_reason") != "reconciled_unfilled"]
+    # real closed trades: exclude the reconciled-unfilled bookkeeping rows AND unconfirmed-close
+    # rows (pnl NULL — P&L unknown), matching briefing/monitor so the count agrees everywhere.
+    trades = [r for r in rows if r.get("exit_reason") != "reconciled_unfilled"
+              and r.get("pnl") is not None]
     n_closed = len(trades)
     # real trades per day — used everywhere a per-day count is shown, so the session table, the
     # tape caption and the trade log all agree (sessions.jsonl counts unfilled entries too).

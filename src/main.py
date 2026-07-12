@@ -392,6 +392,11 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
             # It used to sit below `cost is None`, so a missing/stale quote skipped the brake
             # at precisely the moment it was needed: that path is how 2026-07-09's breach rode
             # to expiry and assigned into naked short stock.
+            if intel.get("defense_enabled", False) and spot is None:
+                # Data outage: no underlying price, so the quote-free stop cannot evaluate and
+                # the position is unmanaged until the 15:55 flatten. Make that visible.
+                log.warning("STRIKE DEFENSE unavailable: no underlying price (data outage) with "
+                            "an open %s — position unmanaged until flatten.", pos["spread"]["kind"])
             if (intel.get("defense_enabled", False) and spot is not None
                     and defense_triggered(pos["spread"]["kind"], spot,
                                           float(pos["spread"]["short"].strike),
@@ -493,6 +498,10 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
     # process immediately — `finally` never runs and live 0DTE positions are stranded into
     # expiry. Route SIGTERM into the same drain path as Ctrl-C.
     def _on_sigterm(_sig, _frame):
+        if _shutdown[0]:
+            # Already draining — a second SIGTERM must NOT interrupt the flatten in progress.
+            log.warning("SIGTERM during shutdown drain — ignoring.")
+            return
         log.warning("SIGTERM received — flattening before exit.")
         raise KeyboardInterrupt
     try:
@@ -854,10 +863,28 @@ def main() -> None:
         # its connection -> watchdog exit -> relaunch.
         broker.client_id = 48
         broker.connect()
-        n = broker.flatten_orphans()
+        # Sweep, then PROVE flat via ib.positions() — not the count of orders sent. A pre-market
+        # stock MarketOrder is held, not filled, so "N orders sent" is not "flat". Retry, and
+        # exit NON-ZERO if still not flat so the caller (the runner's red-test path) can't claim
+        # the account is safe when it isn't.
+        flat = False
+        for attempt in range(6):
+            broker.flatten_orphans()
+            con_ids = [getattr(p.contract, "conId", None) for p in broker.orphan_positions()]
+            if not con_ids:
+                flat = True
+                break
+            flat = broker.confirm_flat(con_ids, timeout=10.0)
+            if flat:
+                break
+            log.warning("--flatten: not flat yet (attempt %d); retrying.", attempt + 1)
+        remaining = len(broker.orphan_positions())
         broker.disconnect()
-        print(f"Flattened {n} position(s).")
-        raise SystemExit(0)
+        if flat and remaining == 0:
+            print("Account confirmed FLAT.")
+            raise SystemExit(0)
+        print(f"NOT FLAT — {remaining} position(s) remain. Manual intervention required.")
+        raise SystemExit(2)
     if args.selftest:
         raise SystemExit(0 if selftest(cfg, mode) else 1)
     run(cfg, mode, once=args.once, daily=args.daily)

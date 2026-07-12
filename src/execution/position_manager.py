@@ -69,7 +69,7 @@ class PositionManager:
             return
         try:
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self._state_path.with_suffix(".json.tmp")
+            tmp = self._state_path.parent / f"{self._state_path.name}.{os.getpid()}.tmp"
             tmp.write_text(json.dumps({
                 "date": (self._day or date.today()).isoformat(),
                 "trades_today": self.trades_today,

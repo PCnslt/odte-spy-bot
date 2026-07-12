@@ -71,13 +71,20 @@ def resolve_dangling(db_path: str, now_iso: str) -> list[int]:
     """Mark never-filled entries (dangling open rows with no credit_fill) as cancelled.
     Returns the ids touched. Deliberately conservative: only rows that clearly never filled
     (credit_fill IS NULL AND pnl IS NULL) are closed, with pnl=0 and an explicit reason — we
-    never fabricate a P&L. Rows that carry a pnl are left alone for a human to inspect."""
+    never fabricate a P&L. Rows that carry a pnl are left alone for a human to inspect.
+
+    PRIOR-SESSION ONLY: a trade that FILLED but hard-crashed before recording its close looks
+    identical to a never-filled entry (credit_fill/pnl both NULL). Only resolve rows from a
+    PRIOR day — a same-day dangling row could be a live/just-crashed trade whose loss the ledger
+    hasn't reconciled yet. Zeroing that would erase a real loss from the per-trade record."""
+    today = now_iso[:10]
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
         ids = [r["id"] for r in conn.execute(
             "SELECT id FROM trades WHERE closed_at IS NULL "
-            "AND credit_fill IS NULL AND pnl IS NULL")]
+            "AND credit_fill IS NULL AND pnl IS NULL "
+            "AND substr(opened_at,1,10) < ?", (today,))]
         for tid in ids:
             conn.execute(
                 "UPDATE trades SET closed_at=?, exit_reason=?, pnl=0 WHERE id=?",
@@ -196,7 +203,7 @@ def upsert_netliq_ledger(path: str, entry: dict) -> None:
     rows = [e for e in read_netliq_ledger(path) if e.get("date") != entry.get("date")]
     rows.append(entry)
     rows.sort(key=lambda e: (e.get("date", ""), e.get("ts", "")))
-    tmp = f"{path}.tmp"
+    tmp = f"{path}.{os.getpid()}.tmp"   # per-process tmp: two writers can't clobber one file
     with open(tmp, "w") as fh:
         for e in rows:
             fh.write(json.dumps(e) + "\n")
