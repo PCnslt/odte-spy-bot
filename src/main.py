@@ -97,7 +97,8 @@ def selftest(cfg, mode: str = "paper") -> bool:
             raise
 
     feed = IBKRFeed(host=ib.host, port=port, client_id=ib.client_id + 5, symbol=cfg.symbol,
-                    exchange=ib.exchange, currency=ib.currency)
+                    exchange=ib.exchange, currency=ib.currency,
+                    market_data_type=int(ib.get("market_data_type", 3)))
     broker = IBKRBroker(cfg, mode=mode)
     from datetime import datetime as _dt, timedelta as _td
 
@@ -174,7 +175,8 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
     ib = cfg.execution.ibkr
     port = ib.paper_port if mode == "paper" else ib.live_port
     feed = IBKRFeed(host=ib.host, port=port, client_id=ib.client_id + 1, symbol=cfg.symbol,
-                    exchange=ib.exchange, currency=ib.currency)
+                    exchange=ib.exchange, currency=ib.currency,
+                    market_data_type=int(ib.get("market_data_type", 3)))
     feed.connect()
 
     broker = IBKRBroker(cfg, mode=mode)

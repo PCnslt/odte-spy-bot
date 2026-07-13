@@ -22,9 +22,14 @@ log = get_logger("ibkr_feed")
 
 class IBKRFeed:
     def __init__(self, host: str = "127.0.0.1", port: int = 7497, client_id: int = 18,
-                 symbol: str = "SPY", exchange: str = "SMART", currency: str = "USD"):
+                 symbol: str = "SPY", exchange: str = "SMART", currency: str = "USD",
+                 market_data_type: int = 3):
         self.host, self.port, self.client_id = host, port, client_id
         self.symbol, self.exchange, self.currency = symbol, exchange, currency
+        # 1=live (needs a real-time OPRA subscription), 2=frozen, 3=delayed, 4=delayed-frozen.
+        # Default 3 works with no entitlement. Flip to 1 in config once you subscribe — else the
+        # bot keeps requesting DELAYED quotes even with a live feed and nothing changes.
+        self.market_data_type = market_data_type
         self.ib = None
 
     def connect(self) -> bool:
@@ -36,7 +41,7 @@ class IBKRFeed:
 
         self.ib = IB()
         self.ib.connect(self.host, self.port, clientId=self.client_id, timeout=15)
-        self.ib.reqMarketDataType(3)  # delayed-frozen fallback if no live entitlement
+        self.ib.reqMarketDataType(self.market_data_type)
         log.info("IBKR feed connected on %s:%d", self.host, self.port)
         return True
 

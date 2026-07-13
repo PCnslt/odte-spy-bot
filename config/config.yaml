@@ -156,6 +156,12 @@ execution:
     client_id: 17
     exchange: SMART
     currency: USD
+    # Market-data type: 1=LIVE (needs a real-time OPRA options subscription on this IBKR
+    # account), 2=frozen, 3=DELAYED (~15 min, works with no subscription), 4=delayed-frozen.
+    # This account has NO options subscription, so option quotes are delayed and the bot can't
+    # price 0DTE trades in real time. WHEN YOU ADD the OPRA add-on (~$1.50-4.50/mo, IB settings),
+    # change this to 1 and the bot will use live quotes. Nothing else needs to change.
+    market_data_type: 3
   option:
     dte: 0                   # 0DTE
     strike_offset: 0         # 0 = ATM; +1 = one strike OTM

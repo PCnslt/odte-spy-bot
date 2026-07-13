@@ -53,7 +53,8 @@ class IBKRBroker(Broker):
 
         self.ib = IB()
         self.ib.connect(self.host, self.port, clientId=self.client_id, timeout=15)
-        self.ib.reqMarketDataType(3)  # delayed-frozen fallback if no live subscription
+        # 1=live (needs OPRA subscription) … 3=delayed (default). See config execution.ibkr.
+        self.ib.reqMarketDataType(int(self.cfg.execution.ibkr.get("market_data_type", 3)))
         self._assert_account_matches_mode()
         log.info("IBKR broker connected (%s) on %s:%d", self.mode, self.host, self.port)
         return True
