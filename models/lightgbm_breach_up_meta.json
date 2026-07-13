@@ -20,7 +20,7 @@
     "low_dist_5",
     "minutes_into_session"
   ],
-  "best_iteration": 7,
+  "best_iteration": 19,
   "params": {
     "objective": "binary",
     "metric": "binary_logloss",
