@@ -181,34 +181,6 @@ def test_event_guard_block_and_widen(tmp_path):
     assert g.check(date(2026, 7, 15)) is None
 
 
-# --- dashboard (R11) -----------------------------------------------------------------
-def test_dashboard_generates_empty_and_with_trades(tmp_path):
-    from src.dashboard import generate
-    from src.utils.trade_log import TradeLog
-    # Empty DB -> renders the no-trades state without crashing.
-    out = generate(db_path=str(tmp_path / "none.db"), out_dir=tmp_path / "d1")
-    txt = out.read_text()
-    assert "No closed trades yet" in txt and "Fill quality" in txt
-    # With one closed trade -> stats, equity.svg, experiment counters render.
-    tl = TradeLog(tmp_path / "t.db")
-    tid = tl.open_trade(opened_at="2026-07-06T10:00:00", kind="bull_put", short_strike=743,
-                        long_strike=738, width=5.0, quantity=1, credit_est=0.40, spot=744.5,
-                        regime="chop", ml_prob=0.55, range_pred=0.003, p_breach_dn=0.4,
-                        p_breach_up=0.3, iv_short=0.20, rv_annual=0.14, rv_60m=0.15,
-                        rvol=1.2, atr_5=0.3, minutes_into_session=30.0, gex_net=1.2e9,
-                        gamma_wall=745.0)
-    tl.close_trade(tid, closed_at="2026-07-06T11:00:00", exit_reason="take_profit",
-                   exit_cost_est=0.20, exit_cost_fill=0.21, credit_fill=0.39, pnl=15.4,
-                   limit_exit=True)
-    tl.close()
-    out2 = generate(db_path=str(tmp_path / "t.db"), out_dir=tmp_path / "d2")
-    txt2 = out2.read_text()
-    assert "| 1 | 100.0%" in txt2                      # headline row
-    assert (tmp_path / "d2" / "equity.svg").exists()
-    assert "GEX+: 1" in txt2 and "take_profit (L)" in txt2
-    assert "treat every number above as noise" in txt2  # small-n honesty
-
-
 # --- GEX aggregation (R10 / H7) ------------------------------------------------------
 def test_compute_gex_signs_wall_and_skips():
     from src.data.polygon_options import compute_gex

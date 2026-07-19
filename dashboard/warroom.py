@@ -208,6 +208,15 @@ table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:13px
 td,th{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
 th{color:var(--na);font-size:10.5px;text-transform:uppercase;letter-spacing:.1em}
 .controls{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.arch{display:flex;flex-direction:column;gap:2px;margin-top:6px}
+.arow{display:flex;gap:8px;flex-wrap:wrap}
+.an{flex:1 1 240px;border:1px solid var(--line);border-left:4px solid var(--na);
+border-radius:8px;padding:8px 10px;background:var(--bg)}
+.an b{display:block;font-family:var(--mono);font-size:14px}
+.an span{color:var(--mut);font-size:13px}
+.an.ok{border-left-color:var(--ok)}.an.warn{border-left-color:var(--warn)}
+.an.crit{border-left-color:var(--crit)}
+.aflow{color:var(--na);text-align:center;font-size:12px;line-height:1.2}
 button{font-family:var(--mono);font-size:15px;padding:12px 18px;border-radius:10px;
 border:1px solid var(--line);background:#1d2630;color:var(--txt);cursor:pointer}
 button.danger{border-color:var(--crit);color:var(--crit)}
@@ -295,6 +304,35 @@ def render(s: dict) -> str:
     acts = "".join(f'<div><span class="t">{t}</span>{html.escape(msg)}</div>'
                    for t, msg in s["actions"]) or '<div class="na">no actions yet today</div>'
 
+    # architecture map — live module states from the same signals the panels use
+    def node(name, detail, state):
+        return (f'<div class="an {state}"><b>{name}</b><span>{detail}</span></div>')
+    gw = "ok" if live else "crit"
+    arch = (
+        '<div class="arch">'
+        '<div class="arow">'
+        + node("Polygon Starter", "history · IV/GEX telemetry", "ok")
+        + node("IB Gateway :4002", "delayed quotes (15m) · orders · truth", gw)
+        + '</div><div class="aflow">▼</div><div class="arow">'
+        + node("Live loop (src/main.py)", "30s poll: signal → risk → order state machine",
+               "ok" if s["heartbeat"] else "warn")
+        + node("Quote logger (id 49)", "XSP chain 1/min + 15:50/09:35 snaps → logs/quotes/",
+               "ok" if s["logger_fresh"] else "warn")
+        + '</div><div class="aflow">▼</div><div class="arow">'
+        + node("Broker truth", "ib.positions() arbiter · orphan sweep · confirm-flat", gw)
+        + node("Risk state", "daily halt · trades/day cap · consec-loss brake",
+               "crit" if rs.get("halted") else "ok")
+        + '</div><div class="aflow">▼</div><div class="arow">'
+        + node("trades.db + ledger", "fills (broker-truth) · netliq.jsonl (EOD reconcile)", "ok")
+        + node("War room :8090", "this page · reads files + broker snapshot",
+               "ok")
+        + '</div><div class="aflow">▼</div><div class="arow">'
+        + node("Kill switch", "flag → entry gate each poll (exits never blocked)",
+               "crit" if s["kill"] else "ok")
+        + node("Gates G1.5→G2", "sealed kill-screens; logger archive feeds them",
+               "ok" if "PASS" in tg else ("crit" if "FAIL" in tg else "na"))
+        + '</div></div>')
+
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="refresh" content="{REFRESH_S}">
@@ -307,6 +345,7 @@ def render(s: dict) -> str:
 <div class="card"><h2>Risk</h2>{risk}</div>
 <div class="card"><h2>System health</h2>{hlth}</div>
 </div>
+<div class="card" style="margin-top:14px"><h2>Architecture — live module map</h2>{arch}</div>
 <div class="card" style="margin-top:14px"><h2>Recent activity</h2><div class="log">{acts}</div></div>
 <div class="card" style="margin-top:14px"><h2>Controls — paper account only</h2>
 <div class="controls">

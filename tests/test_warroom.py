@@ -50,7 +50,8 @@ def test_render_smoke_with_empty_state():
          "logger_fresh": False, "heartbeat": False, "test_gate": "", "log_exists": False}
     h = warroom.render(s)
     for probe in ("WAR ROOM", "Account", "Risk", "System health", "Controls",
-                  "KILL SWITCH", "FORCE FLATTEN"):
+                  "KILL SWITCH", "FORCE FLATTEN", "Architecture", "Quote logger (id 49)",
+                  "Broker truth"):
         assert probe in h
 
 

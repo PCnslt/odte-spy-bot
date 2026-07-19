@@ -16,17 +16,29 @@ from __future__ import annotations
 import argparse
 import glob
 import re
+import sqlite3
 from datetime import date as _date
 from datetime import datetime
 from pathlib import Path
 
-from .dashboard import _rows
 from .monitor import death_spiral_check
 from .reconcile import read_netliq_ledger
 from .session_chart import build_session_svg, tail_activity
 from .session_log import read_sessions
 
 LEDGER = "logs/netliq.jsonl"
+
+
+def _rows(db_path: str) -> list[dict]:
+    """Closed trades, oldest first. (Moved from the retired src/dashboard.py, 2026-07-20.)"""
+    if not Path(db_path).exists():
+        return []
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM trades WHERE closed_at IS NOT NULL ORDER BY opened_at")]
+    conn.close()
+    return rows
 
 _CSS = """
 :root{--ink:#0e141b;--panel:#151d27;--line:#27323f;--text:#d8dee7;--muted:#8894a3;--faint:#5b6773;
