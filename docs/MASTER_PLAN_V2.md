@@ -45,6 +45,8 @@ Source: Vilkov 0DTE strategies (github.com/vilkovgr/0dte-strategies, companion t
 
 **Your current bot sells tight credit spreads — the structure family with the NEGATIVE net Sharpe.**
 
+*Update 2026-07-19:* Vilkov's extended sample (→2026-02) shows the put ratio **unconditionally SR −0.26 (2022–23) and −4.41 (2024–26, n=55, indicative)** — the 0.93 is carried by earlier years + conditioning. Priors for our gates worsened; gates unchanged. Also peer-reviewed (Papagelis–Dotsis, JFM 2025): **VRP is concentrated overnight** — an intraday-only 0DTE seller harvests the thin slice. And the ≥2.0 gate passed on **85.7%** of the last 252 days — a tail-switch, not a selector (disclosed in PREREGISTRATION Amendment 2).
+
 ### 1.3 The tail is the whole story
 
 - 1%-tail expected shortfall on short 0DTE premium: **0.58–1.58% of the underlying per event** — dwarfs the ~0.001% median daily VRP capture (Vilkov).

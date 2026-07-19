@@ -62,6 +62,25 @@ records the real delayed XSP chain bid/ask daily; delay is irrelevant for calibr
 - Honest degradation note: aggregates miss quotes entirely; sparse far-OTM legs print rarely.
   The screen exists only as a cheap one-way filter (kill early / proceed), never as proof.
 
+## Amendment 2 (2026-07-19, registered before any historical data was seen)
+
+Three factual updates from the deep-dive research pass — **no gate criteria change**:
+
+1. **Correction:** XSP complex orders tick **$0.01**, not $0.05 (Cboe release C2022060301;
+   SR-CBOE-2025-069). 1×2 ratios (≤3:1) qualify for electronic COB/COA handling. IBKR
+   Smart-Routed option-vs-option combos are **guaranteed by default** (KB 1323) — the harness
+   may assume atomic net-price fills; legging risk is the broker's.
+2. **Prior update (against us), disclosed:** Vilkov's updated sample (through 2026-02) shows
+   the put ratio **unconditionally at SR −0.26 (2022–23) and −4.41 (2024–26, n=55, indicative)**.
+   Full-sample conditional net 0.93 stands but is carried by earlier years. Gates unchanged —
+   this is precisely what they exist to adjudicate cheaply.
+3. **Signal-selectivity disclosure:** the ≥2.0 vol-pt VRP gate passed on **85.7%** of the last
+   252 trading days (FRED/Cboe data) — it is a tail-avoidance switch, not an edge selector.
+   Additionally, peer-reviewed evidence (Papagelis–Dotsis, JFM 2025) finds the VRP concentrated
+   **overnight**, thinning what an intraday-only seller can harvest. An **exploratory-only**
+   variant (enter prior close, 1DTE, exit next open/noon) may be tabulated alongside G1.5 for
+   information; it cannot rescue a FAIL and is not part of any pass criterion.
+
 ## Sign-off
 
 Engineer of record: Claude (session 61c9c7d9). Owner: Shawn Rahman.
