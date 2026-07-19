@@ -292,8 +292,10 @@ def _arch_and_status_html(db_path: str) -> str:
              f'{len(missed)}' + (f' — latest: {missed[-1][1].replace("missed_", "")} '
                                  f'{missed[-1][0][4:6]}/{missed[-1][0][6:]}' if missed else ""),
              "pos" if not missed else "neg")
+    _d2sun = (6 - datetime.now().date().weekday()) % 7          # Mon=0 … Sun=6
+    _sun_txt = "TONIGHT" if _d2sun == 0 else f"in {_d2sun}d"
     r += row("2FA / Gateway auth",
-             (f'last OK {la[:4]}-{la[4:6]}-{la[6:]} · next required: SUNDAY EVENING'
+             (f'last OK {la[:4]}-{la[4:6]}-{la[6:]} · next: SUNDAY EVENING ({_sun_txt})'
               if la else "never seen"),
              "neg" if (auth_days is None or auth_days >= 5) else "pos")
     r += row("G2-FWD progress", f'{counts["sessions"]}/60 sessions · 0/200 structure trades · '
