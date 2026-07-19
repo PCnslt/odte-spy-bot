@@ -159,7 +159,23 @@ qty    = floor(0.5% × NetLiq / L_max)        # one day can never cost >0.5%
 
 **Execution:** guaranteed combo, limit at mid, ladder toward the market every 15–20s, abort entry if not filled in 90s (no chasing). Reuse v1's terminal-state/confirm-flat machinery unchanged.
 
-### 3.3 Data plan (decision made for you)
+### 3.3 Data plan — v3, $0-first (uses what is already paid for)
+
+Ordering fixed 2026-07-19 after challenge: **spend nothing until the existing data kills or
+clears the strategy.**
+
+| Step | Gate | Data | Cost |
+|---|---|---|---|
+| 1 | **Quote archive + G4** | IBKR **delayed** feed (free): `quote_logger` records the real XSP 0DTE chain bid/ask every session → width(Δ,tod) calibration + XSP spread measurement | **$0** |
+| 2 | **G1.5 screen** | **Polygon Starter (already paid, $29)**: real 0DTE trade aggregates 2022-05→present + the width model from step 1. **KILL if net PF < 1.0** on ≥350 trades → done, conclusion stands, $80 never spent | **$0 new** |
+| 3 | **G2 definitive** | ThetaData Standard NBBO, one month — **only if G1.5 proceeds and Shawn approves** | $80 × 1 |
+| 4 | Live quotes | IBKR OPRA add-on — **only after a G2 PASS** | ~$14.50/mo |
+
+Settled (2026-07-05, empirical, do not re-test): Polygon/Massive Starter has **no NBBO** — it can
+screen (trade prints) but can never gate (quotes). A G1.5 pass is not evidence of edge; only G2
+can PASS. Free supplements: FRED/CBOE for VIX & RV telemetry.
+
+#### (superseded v2 table, kept for the record)
 
 | Purpose | Feed | Cost | Action |
 |---|---|---|---|

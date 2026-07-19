@@ -44,6 +44,24 @@ one more reason XSP spread quality must be measured in paper before live.
 Anything else is **FAIL**. No parameter search on the gated criteria; any exploratory variants
 must be labeled exploratory and cannot rescue a FAIL.
 
+## Amendment v3 (2026-07-19, registered before any historical data was seen)
+
+**G1.5 — screening gate on EXISTING data ($0).** Before any ThetaData spend, the same strategy
+is screened on the Polygon Starter subscription Shawn already pays for (real 0DTE option minute
+**trade aggregates**, 2022-05-16 → present — settled empirically 2026-07-05: that plan has no
+NBBO). Fills modeled on trade-bar prices with a spread penalty from a **width(delta,
+time-of-day) model calibrated on our own free quote archive** (`src/research/quote_logger.py`
+records the real delayed XSP chain bid/ask daily; delay is irrelevant for calibration).
+
+- **G1.5 KILL:** screening net PF < 1.0 on ≥ 350 trades → the strategy dies here; the $80 is
+  never spent; pre-registered conclusion stands ("no retail edge at current costs").
+- **G1.5 PROCEED:** screening net PF ≥ 1.0 → authorizes (with Shawn's OK) one month of
+  ThetaData for the definitive G2. **A G1.5 pass is NOT evidence of edge** — trade-price fills
+  overstate quality; only G2 can PASS the strategy.
+- G2 criteria are unchanged by this amendment and cannot be relaxed by any G1.5 outcome.
+- Honest degradation note: aggregates miss quotes entirely; sparse far-OTM legs print rarely.
+  The screen exists only as a cheap one-way filter (kill early / proceed), never as proof.
+
 ## Sign-off
 
 Engineer of record: Claude (session 61c9c7d9). Owner: Shawn Rahman.

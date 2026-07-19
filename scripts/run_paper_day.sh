@@ -94,9 +94,18 @@ if [ "$TESTS_OK" -eq 0 ]; then
 fi
 
 echo "$(date +%H:%M) Starting the session."
+
+# Free NBBO archive builder (Master Plan v3): logs the DELAYED XSP 0DTE chain quotes all
+# session — real bid/ask at $0, building the G1.5 width calibration + G4 spread measurement.
+# Read-only, own client id (49), fail-soft: its death never touches the trading loop.
+pkill -f "src\.research\.quote_logger" 2>/dev/null || true
+"$REPO/venv/bin/python" -m src.research.quote_logger >>"$LOG" 2>&1 &
+QLOG_PID=$!
+
 # caffeinate -i: keep the Mac from idle-sleeping while the session runs.
 caffeinate -i "$REPO/venv/bin/python" -m src.main --mode paper --daily
 rc=$?
+kill "$QLOG_PID" 2>/dev/null || true
 
 # End-of-day evidence summary: every session closes with the TradeLog report.
 echo "=== $(date) TradeLog report ==="
