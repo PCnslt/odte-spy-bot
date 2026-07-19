@@ -132,8 +132,22 @@ class IBKRBroker(Broker):
             rem = trade.orderStatus.remaining
             return int(rem) if rem is not None else 0
 
-    def positions_for(self, con_ids) -> dict:
-        """Broker truth: net position per conId (0 when flat)."""
+    def refresh_positions(self, timeout: float = 2.0) -> None:
+        """Force a real reqPositions round-trip so ib.positions() reflects TWS, not just the
+        local event cache. ib.sleep(0) is one loop tick with NO round-trip, so a fill TWS hasn't
+        pushed yet is invisible for a poll (the R3 one-poll cache-lag). Fail-soft: on any error
+        keep the cache — never crash the trading loop over a refresh."""
+        try:
+            self.ib.reqPositions()
+            self.ib.waitOnUpdate(timeout=timeout)   # pump until positionEnd is processed
+        except Exception as exc:
+            log.info("refresh_positions: reqPositions failed (%s); using cache.", exc)
+
+    def positions_for(self, con_ids, refresh: bool = False) -> dict:
+        """Broker truth: net position per conId (0 when flat). refresh=True forces a reqPositions
+        round-trip first, closing the one-poll cache-lag window (R3)."""
+        if refresh:
+            self.refresh_positions()
         self.ib.sleep(0)
         out = {int(c): 0 for c in con_ids if c}
         for p in self.ib.positions():
@@ -461,12 +475,18 @@ class IBKRBroker(Broker):
             total += int(rem if rem is not None else (t.order.totalQuantity or 0))
         return total
 
-    def orphan_positions(self) -> list:
+    def orphan_positions(self, refresh: bool = True) -> list:
         """Real SPY positions the process isn't managing — orphaned option legs (after a crash
         or a close that never confirmed) AND shares from a 0DTE assignment. All unmanaged risk.
         Incident 2026-07-09: a breached bear-call whose market close didn't confirm was left
         open; the short call expired ITM and assigned into short stock — which the OPT-only
-        sweep would never have cleared. Now STK is included."""
+        sweep would never have cleared. Now STK is included.
+
+        refresh=True (default) forces a reqPositions round-trip first so a leg that filled since
+        the last processed event (e.g. a cancel/fill race) can't hide in the stale cache for a
+        poll (R3, one-poll cache-lag). Callers gating NEW entries on this MUST keep the default."""
+        if refresh:
+            self.refresh_positions()
         out = []
         for p in self.ib.positions():
             c = p.contract

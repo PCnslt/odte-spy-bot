@@ -28,6 +28,10 @@ CADENCE_S = 60.0        # one sweep per minute — pacing-safe for ~60 snapshot 
 WINDOW_PCT = 0.02       # strikes within ±2% of spot
 STOP_AT = dtime(16, 5)
 OUT_DIR = Path("logs/quotes")
+# Overnight-VRP experiment (Master Plan v3 §2b): also archive the near-close and next-open marks
+# into a parallel *_snap file so pre-close/next-open pairs can be simulated later. Additive — the
+# per-minute archive is unchanged.
+SNAP_TIMES = [(dtime(15, 50), "preclose"), (dtime(9, 35), "open")]
 
 
 def strike_window(spot: float, pct: float = WINDOW_PCT, step: float = 1.0) -> list[float]:
@@ -38,6 +42,17 @@ def strike_window(spot: float, pct: float = WINDOW_PCT, step: float = 1.0) -> li
     hi = (int((spot * (1 + pct)) // step) + 1) * step
     n = int(round((hi - lo) / step)) + 1
     return [round(lo + i * step, 2) for i in range(n)]
+
+
+def due_snap(t: dtime, snaps=SNAP_TIMES, cadence_s: float = CADENCE_S) -> str | None:
+    """Label ('preclose'/'open') when `t` falls in [snap_time, snap_time+cadence); else None.
+    One sweep per window gets copied to the *_snap archive for the overnight-VRP experiment."""
+    now_s = t.hour * 3600 + t.minute * 60 + t.second
+    for st, label in snaps:
+        st_s = st.hour * 3600 + st.minute * 60 + st.second
+        if st_s <= now_s < st_s + cadence_s:
+            return label
+    return None
 
 
 def quote_row(ts: str, symbol: str, expiry: str, strike: float, right: str,
@@ -70,6 +85,13 @@ def run(symbol: str = "XSP", underlying_symbol: str = "XSP") -> None:   # pragma
     if new:
         w.writerow(["ts", "symbol", "expiry", "strike", "right", "bid", "ask",
                     "bid_size", "ask_size"])
+    snap_out = OUT_DIR / f"{day}_{symbol.lower()}_snap.csv.gz"
+    snap_new = not snap_out.exists()
+    snap_fh = gzip.open(snap_out, "at", newline="")
+    snap_w = csv.writer(snap_fh)
+    if snap_new:
+        snap_w.writerow(["ts", "symbol", "expiry", "strike", "right", "bid", "ask",
+                         "bid_size", "ask_size", "snap"])
 
     und = Index(underlying_symbol, "CBOE", "USD")
     ib.qualifyContracts(und)
@@ -88,18 +110,24 @@ def run(symbol: str = "XSP", underlying_symbol: str = "XSP") -> None:   # pragma
                     for k in strike_window(float(spot)) for r in ("P", "C")]
             opts = [o for o in ib.qualifyContracts(*opts) if o.conId]
             ts = datetime.now().isoformat(timespec="seconds")
+            snap = due_snap(datetime.now().time())     # 'preclose'/'open' in a snap window, else None
             for tk in ib.reqTickers(*opts):
                 row = quote_row(ts, symbol, expiry, tk.contract.strike, tk.contract.right,
                                 tk.bid, tk.ask, tk.bidSize, tk.askSize)
                 if row:
                     w.writerow(row)
                     kept += 1
+                    if snap:
+                        snap_w.writerow(row + [snap])
             fh.flush()
+            if snap:
+                snap_fh.flush()
         except Exception as exc:                       # fail-soft: log and keep sweeping
             log.warning("quote sweep failed: %s", exc)
         ib.sleep(CADENCE_S)
 
     fh.close()
+    snap_fh.close()
     ib.disconnect()
     log.info("quote_logger done: %d quote rows archived.", kept)
 

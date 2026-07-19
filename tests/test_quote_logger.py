@@ -1,7 +1,9 @@
 """Quote-logger pure functions: strike windows and the never-fabricate row rule."""
 from __future__ import annotations
 
-from src.research.quote_logger import quote_row, strike_window
+from datetime import time as dtime
+
+from src.research.quote_logger import SNAP_TIMES, due_snap, quote_row, strike_window
 
 
 def test_strike_window_brackets_spot():
@@ -24,3 +26,19 @@ def test_quote_row_writes_only_real_two_sided_quotes():
     assert quote_row("t", "XSP", "e", 75.0, "P", float("nan"), 0.45, 1, 1) is None
     assert quote_row("t", "XSP", "e", 75.0, "P", -0.1, 0.05, 1, 1) is None
     assert quote_row("t", "XSP", "e", 75.0, "P", 0.40, 0.45, None, None)[7] == 0
+
+
+def test_due_snap_labels_preclose_and_open():
+    assert due_snap(dtime(15, 50, 0)) == "preclose"
+    assert due_snap(dtime(15, 50, 45)) == "preclose"      # within the 60s cadence window
+    assert due_snap(dtime(9, 35, 10)) == "open"
+
+
+def test_due_snap_none_outside_windows():
+    assert due_snap(dtime(12, 0, 0)) is None
+    assert due_snap(dtime(15, 51, 5)) is None              # just past the window end
+    assert due_snap(dtime(9, 34, 59)) is None              # just before the window start
+
+
+def test_snap_times_are_labelled_pairs():
+    assert {lab for _, lab in SNAP_TIMES} == {"preclose", "open"}
