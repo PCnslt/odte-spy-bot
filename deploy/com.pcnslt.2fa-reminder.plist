@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Sunday-evening 2FA reminder (owner-approved via advisor round, 2026-07-20). The weekly
+     IBKR re-login is the ONLY manual step keeping the bot alive; missing it killed 3 of 5
+     sessions the week of 07-13. Fires a local dialog Sundays 18:30; auto-dismisses after
+     10 min so an unattended Mac is never blocked. Local osascript only - nothing external. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.pcnslt.2fa-reminder</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/osascript</string>
+    <string>-e</string>
+    <string>display dialog "2FA — log in to IB Gateway NOW or the bot idles all week.\n\n1. Open IB Gateway on this Mac\n2. Log in to the paper account\n3. Approve the push on your phone" with title "ODTE-SPY-BOT · weekly 2FA" buttons {"Done"} default button 1 with icon caution giving up after 600</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Weekday</key><integer>0</integer>
+    <key>Hour</key><integer>18</integer>
+    <key>Minute</key><integer>30</integer>
+  </dict>
+  <key>StandardOutPath</key><string>/tmp/2fa-reminder.out</string>
+  <key>StandardErrorPath</key><string>/tmp/2fa-reminder.err</string>
+</dict>
+</plist>

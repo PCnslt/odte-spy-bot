@@ -1,55 +1,43 @@
-# War-room dashboard
+# Status dashboard — the ONE dashboard, view-only
 
-**Launch (one command, on the trading Mac):**
+**URL: http://127.0.0.1:8090** — always on (launchd `com.pcnslt.dashboard`), auto-refreshes
+every 15s. It serves the single dashboard module `src/dashboard_html.py` (the same page the
+EOD artifact uses), rendered live from files only: `trades.db`, `logs/netliq.jsonl`,
+`logs/risk_state.json`, the daily log, and `logs/quotes/`. **No broker connection, no
+controls** — nothing on this page can alter the bot (owner order, 2026-07-20; sealed by
+`tests/test_dashboard_live.py::test_serve_is_view_only`). Bot control is terminal-only:
+`python -m src.main --flatten --mode paper`, config, or unloading the launchd agents.
 
-    bash ~/trading/odte-spy-bot/dashboard/run_warroom.sh
+## Page contents (top to bottom)
+- **Architecture — live module map**: CSS-only box-flow (phone-readable) of Polygon / IB
+  Gateway → live loop + quote logger → risk state + trades.db/ledger → this dashboard →
+  gates; each node colored by its live health signal.
+- **Readiness**: heartbeat, quote logger, morning test gate, **sessions-missed counter**
+  (with latest reason), **2FA status** ("last OK <date> · next required SUNDAY EVENING"),
+  **G2-FWD progress** (sessions/60 · structure trades/200 · basis fills/40 · VRP snap days),
+  **G2-FWD earliest-verdict date** (computed; assumptions shown), next milestones.
+- Account tiles, NetLiq curve, SPY session tape, daily history, trade log, activity —
+  the original `dashboard_html.py` content, unchanged.
 
-then open **http://127.0.0.1:8090**. Auto-refreshes every 15s.
+## History (why there is exactly one dashboard)
+- 07-09: localhost livedash deleted on owner order ("one dashboard").
+- 07-20 AM: war room built on owner order, then made view-only on owner order.
+- 07-20 PM: owner ordered the war room replaced by THIS — `dashboard_html.py` served live.
+  `dashboard/warroom.py`, the Tailscale setup (`setup_tunnel.sh`, `REMOTE.md`), and the
+  `com.pcnslt.warroom` agent were deleted in the same commit. Data freshness choice (owner):
+  live log-tail intraday, EOD fallback before the session starts. Live-broker NetLiq tiles
+  require a Gateway connection and are intentionally NOT part of the always-on server; the
+  EOD regeneration (runner, `--live`) still stamps broker-truth numbers each close.
 
-**Always-on (recommended)** — install it as a launchd service so it stays up 24/7 (and reachable
-from your phone; see below): `bash ~/trading/odte-spy-bot/dashboard/setup_tunnel.sh`. Once
-installed, the launchd agent `com.pcnslt.warroom` owns `:8090`; the 09:25 runner no longer
-starts its own copy.
+## Install / operate
 
-**Remote access from your phone** — private, free, no password, nothing on GitHub: see
-[REMOTE.md](REMOTE.md) (Tailscale). Not GitHub Pages — a dashboard with live trade controls
-must never sit behind a public URL.
-
-## Panels
-- **Account** — NetLiq / day P&L / total P&L vs the $1M deposit; LIVE from IB Gateway when up,
-  otherwise last EOD ledger (source is labeled).
-- **Positions & today's trades** — open broker positions (broker truth), today's book rows.
-- **Risk** — kill-switch state, daily-loss-halt usage (% of −$2,000), trades left, consecutive
-  losses, VRP telemetry (ATM IV − 20d RV, best-effort from the existing Polygon plan).
-- **System health** — Gateway, bot heartbeat (daily-log freshness), quote logger, morning test
-  gate (PASS/FAIL @ commit), G2-FWD gate progress (sessions/trades/basis fills), VRP snap days.
-- **Architecture — live module map** — CSS-only box-flow of the whole system, each node colored
-  by its live health signal. Phone-readable.
-- **Recent activity** — last 20 substantive bot actions with timestamps.
-- **Next milestones** — dated line: XSP rehearsal, G1.5 first run, G2-FWD eligibility.
-
-**VIEW-ONLY (owner order, 2026-07-20):** this dashboard cannot alter the bot. No kill switch,
-no flatten button, no POST endpoints (`tests/test_warroom.py::test_view_only_no_post_no_controls`
-fails the build if any return). Bot control is terminal-only:
-`python -m src.main --flatten --mode paper`, config, or stopping the launchd agents.
+    cp deploy/com.pcnslt.dashboard.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.pcnslt.dashboard.plist    # start (auto on boot)
+    launchctl unload ~/Library/LaunchAgents/com.pcnslt.dashboard.plist  # stop
 
 ## Sunday 2FA ritual (the #1 cause of missed sessions)
-The bot missed 3 of 5 sessions the week of 07-13 because the IB Gateway sat unauthenticated.
-IBKR requires a weekly re-login with mobile 2FA; the Gateway restarts Sunday evenings.
-**Every Sunday evening (or Monday before 09:25):** open IB Gateway on this Mac, log in to the
-paper account, approve the 2FA push on the phone. The runner retries every 2 min until 15:30
-and trades the moment the Gateway authenticates — no restart needed. (IBC auto-restart is NOT
-installed; it cannot bypass 2FA anyway — the phone tap is unavoidable.)
-
-## Why this is NOT hosted on GitHub Codespaces
-The advisor's spec asked for Codespaces. It cannot work, by design of this system:
-1. **The data isn't in the repo.** `trades.db`, `logs/` (ledger, risk state, quote archives)
-   are deliberately gitignored — financial data never enters git. A Codespace clone sees none
-   of it.
-2. **The IB Gateway is 127.0.0.1:4002 on this Mac.** A Codespace cannot reach it, so no live
-   account, no positions, no controls.
-3. **Free Codespaces is not always-on hosting** (~120 core-hours/month; sleeps when idle).
-
-The remote read-only view remains the claude.ai artifact snapshot; this war room is the live
-cockpit and runs where the data lives. (If remote live access is ever wanted, a Tailscale
-tunnel to this Mac is the sane path — not committing financial state to git.)
+3 of 5 sessions the week of 07-13 were lost solely because the Gateway sat unauthenticated.
+**Every Sunday evening (or Monday before 09:25): open IB Gateway, log in to paper, approve
+the phone push.** The runner waits and trades the moment auth appears (retries to 15:30).
+A launchd agent (`com.pcnslt.2fa-reminder`) pops a local dialog every **Sunday 18:30** as a
+reminder (auto-dismisses after 10 min). IBC is NOT installed — it cannot bypass 2FA anyway.

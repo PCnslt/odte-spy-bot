@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Always-on VIEW-ONLY status dashboard (owner order 2026-07-20): serves the ONE dashboard
+     module (src/dashboard_html.py) at 127.0.0.1:8090 from files only - no broker connection,
+     no controls. Replaces the retired war-room agent (com.pcnslt.warroom). -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.pcnslt.dashboard</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/pcnslt/trading/odte-spy-bot/venv/bin/python</string>
+    <string>/Users/pcnslt/trading/odte-spy-bot/dashboard/serve.py</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/pcnslt/trading/odte-spy-bot</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>/Users/pcnslt/trading/odte-spy-bot/logs/dashboard.out</string>
+  <key>StandardErrorPath</key><string>/Users/pcnslt/trading/odte-spy-bot/logs/dashboard.err</string>
+</dict>
+</plist>

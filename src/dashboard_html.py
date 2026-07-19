@@ -19,6 +19,7 @@ import re
 import sqlite3
 from datetime import date as _date
 from datetime import datetime
+from datetime import timedelta as _timedelta
 from pathlib import Path
 
 from .monitor import death_spiral_check
@@ -39,6 +40,90 @@ def _rows(db_path: str) -> list[dict]:
         "SELECT * FROM trades WHERE closed_at IS NOT NULL ORDER BY opened_at")]
     conn.close()
     return rows
+
+
+# --- live status helpers (moved from the retired war room, 2026-07-20) ----------------------
+def session_outcome(text: str) -> str:
+    """Classify one daily log: ran / missed_2fa / missed_testgate / gap_blocked / weekend.
+    Marker strings are the runner's own echoes (scripts/run_paper_day.sh)."""
+    if "Weekend; exiting" in text:
+        return "weekend"
+    if "TESTS FAILED" in text or "tests FAILED" in text or "REFUSING to trade" in text:
+        return "missed_testgate"          # runner echoes both casings (lines 57 / 92)
+    if "no authenticated Gateway" in text and "Starting the session" not in text:
+        return "missed_2fa"
+    if "GAP GUARD" in text:
+        return "gap_blocked"                     # session ran; entries blocked by design
+    if "Starting the session" in text:
+        return "ran"
+    return "unknown"
+
+
+def recent_outcomes(log_dir: Path, n: int = 10) -> list[tuple[str, str]]:
+    """[(YYYYMMDD, outcome)] for the last n weekday session logs, oldest first."""
+    try:
+        logs = sorted(Path(log_dir).glob("daily_*.log"))[-n - 4:]   # slack for weekend files
+    except OSError:
+        return []
+    out = [(p.name[6:14], session_outcome(p.read_text(errors="replace"))) for p in logs]
+    return [(d, o) for d, o in out if o != "weekend"][-n:]
+
+
+def last_auth_date(log_dir: Path) -> str | None:
+    """Most recent session date whose log shows an authenticated Gateway (2FA proxy)."""
+    try:
+        files = sorted(Path(log_dir).glob("daily_*.log"), reverse=True)
+    except OSError:
+        return None
+    for p in files:
+        if "Gateway authenticated" in p.read_text(errors="replace"):
+            return p.name[6:14]
+    return None
+
+
+def g2fwd_counts(db_path: str = "trades.db", qdir: str | Path = "logs/quotes") -> dict:
+    """G2-FORWARD evidence progress (docs/PREREGISTRATION_G2FWD.md): logger sessions,
+    VRP snap days, and basis-usable fills. Structure trades stay 0 until v3 trades."""
+    qdir = Path(qdir)
+    files = sorted(qdir.glob("*.csv.gz")) if qdir.exists() else []
+    sessions = len({f.name[:8] for f in files if not f.name.endswith("_snap.csv.gz")})
+    snaps = len([f for f in files if f.name.endswith("_snap.csv.gz")])
+    basis = 0
+    try:
+        if Path(db_path).exists():        # connect() would CREATE a stray empty db file
+            c = sqlite3.connect(db_path)
+            basis = c.execute(
+                "SELECT COUNT(*) FROM trades WHERE exit_cost_fill IS NOT NULL").fetchone()[0]
+            c.close()
+    except Exception:
+        pass
+    return {"sessions": sessions, "snap_days": snaps, "basis_fills": basis}
+
+
+def add_weekdays(start: _date, n: int) -> _date:
+    """Date after n more weekday sessions, counting start itself if it is a weekday."""
+    d, left = start, n
+    while left > 0:
+        if d.weekday() < 5:
+            left -= 1
+        if left > 0:
+            d += _timedelta(days=1)
+    return d
+
+
+def earliest_g2fwd(counts: dict, today: _date, structure_start: _date,
+                   trades_per_day: int = 4, basis_per_day: int = 1) -> tuple[_date, str]:
+    """Earliest possible G2-FORWARD verdict date if ZERO sessions are missed, with the
+    binding constraint named. Assumptions are explicit parameters, not hidden."""
+    start = today if today.weekday() < 5 else add_weekdays(today + _timedelta(days=1), 1)
+    d_sessions = add_weekdays(start, max(0, 60 - counts.get("sessions", 0)))
+    d_basis = add_weekdays(start, max(0, (40 - counts.get("basis_fills", 0) + basis_per_day - 1)
+                                      // basis_per_day))
+    need_tr = (200 + trades_per_day - 1) // trades_per_day
+    d_trades = add_weekdays(max(structure_start, start), need_tr)
+    binding = max(("sessions", d_sessions), ("basis fills", d_basis), ("200 structure trades",
+                  d_trades), key=lambda kv: kv[1])
+    return binding[1], binding[0]
 
 _CSS = """
 :root{--ink:#0e141b;--panel:#151d27;--line:#27323f;--text:#d8dee7;--muted:#8894a3;--faint:#5b6773;
@@ -83,6 +168,13 @@ footer{margin-top:36px;padding-top:16px;border-top:1px solid var(--line);color:v
 .daytab:hover{color:var(--text);border-color:var(--accent-dim)}
 .daytab.active{color:#0e141b;background:var(--accent);border-color:var(--accent);font-weight:600}
 .daycap{font-family:var(--mono);font-size:11.5px;color:var(--faint);margin:2px 2px 8px}
+.arch{display:flex;flex-direction:column;gap:2px}
+.arow{display:flex;gap:8px;flex-wrap:wrap}
+.an{flex:1 1 240px;border:1px solid var(--line);border-left:4px solid var(--idle);border-radius:10px;padding:8px 12px;background:var(--panel)}
+.an b{display:block;font-family:var(--mono);font-size:13px;color:var(--text)}
+.an span{color:var(--muted);font-size:12px}
+.an.good{border-left-color:var(--good)}.an.warn{border-left-color:var(--warn)}.an.crit{border-left-color:var(--crit)}
+.aflow{color:var(--faint);text-align:center;font-size:11px;line-height:1.2}
 """
 
 def _account_svg(pts: list[tuple[str, float]]) -> str:
@@ -136,6 +228,90 @@ def _money(v, signed=False, cents=False):
         return "—"
     dp = 2 if cents else 0
     return f"${v:+,.{dp}f}" if signed else f"${v:,.{dp}f}"
+
+
+def _arch_and_status_html(db_path: str) -> str:
+    """Architecture map + live readiness, from files only (no broker connection). Rendered at
+    the top of the page; every node/row is colored by the same signals the runner emits."""
+    logs = Path("logs")
+    day = datetime.now().strftime("%Y%m%d")
+    dlog = logs / f"daily_{day}.log"
+    heartbeat = dlog.exists() and (datetime.now().timestamp() - dlog.stat().st_mtime) < 120
+    qdir = logs / "quotes"
+    qfiles = sorted(qdir.glob("*.csv.gz")) if qdir.exists() else []
+    logger_fresh = bool(qfiles) and (datetime.now().timestamp()
+                                     - qfiles[-1].stat().st_mtime) < 180
+    tg = ""
+    if (logs / "test_gate.txt").exists():
+        tg = (logs / "test_gate.txt").read_text().strip()
+    halted = False
+    try:
+        import json
+        halted = bool(json.loads((logs / "risk_state.json").read_text()).get("halted"))
+    except Exception:
+        pass
+    outs = recent_outcomes(logs)
+    missed = [(d, o) for d, o in outs if o.startswith("missed")]
+    la = last_auth_date(logs)
+    auth_days = ((datetime.now().date()
+                  - datetime.strptime(la, "%Y%m%d").date()).days if la else None)
+    counts = g2fwd_counts(db_path)
+
+    def node(name, detail, state):
+        return f'<div class="an {state}"><b>{name}</b><span>{detail}</span></div>'
+    hb = "good" if heartbeat else "warn"
+    arch = (
+        '<section class="sec"><span class="eyebrow">Architecture — live module map</span>'
+        '<div class="arch"><div class="arow">'
+        + node("Polygon Starter", "history · IV/GEX telemetry (XSP aggs verified 07-20)", "good")
+        + node("IB Gateway :4002", "delayed quotes (15m) · orders · broker truth", hb)
+        + '</div><div class="aflow">▼</div><div class="arow">'
+        + node("Live loop v1 (src/main.py)", "30s poll: signal → risk → order state machine", hb)
+        + node("Quote logger (id 49)", "XSP chain 1/min + 15:50/09:35 VRP snaps",
+               "good" if logger_fresh else "warn")
+        + '</div><div class="aflow">▼</div><div class="arow">'
+        + node("Risk state", "daily halt · trades/day cap · consec-loss brake",
+               "crit" if halted else "good")
+        + node("trades.db + NetLiq ledger", "broker-truth fills · EOD reconcile", "good")
+        + '</div><div class="aflow">▼</div><div class="arow">'
+        + node("This dashboard :8090", "view-only · files only · no controls", "good")
+        + node("Gates G1.5 → G2-FWD (v3 registered)", "sealed; a FAIL is final",
+               "good" if "PASS" in tg else ("crit" if "FAIL" in tg else "idle"))
+        + '</div></div></section>')
+
+    def row(label, val, cls):
+        return (f'<tr><td class="h">{label}</td>'
+                f'<td class="n"><span class="{cls}">{val}</span></td></tr>')
+    r = row("Bot heartbeat", "active" if heartbeat else "no session running",
+            "pos" if heartbeat else "mut")
+    r += row("Quote logger", "recording" if logger_fresh else "idle",
+             "pos" if logger_fresh else "mut")
+    r += row("Morning test gate", tg or "not yet run", "pos" if "PASS" in tg
+             else ("neg" if "FAIL" in tg else "mut"))
+    r += row(f"Sessions missed (last {len(outs) or 10})",
+             f'{len(missed)}' + (f' — latest: {missed[-1][1].replace("missed_", "")} '
+                                 f'{missed[-1][0][4:6]}/{missed[-1][0][6:]}' if missed else ""),
+             "pos" if not missed else "neg")
+    r += row("2FA / Gateway auth",
+             (f'last OK {la[:4]}-{la[4:6]}-{la[6:]} · next required: SUNDAY EVENING'
+              if la else "never seen"),
+             "neg" if (auth_days is None or auth_days >= 5) else "pos")
+    r += row("G2-FWD progress", f'{counts["sessions"]}/60 sessions · 0/200 structure trades · '
+             f'{counts["basis_fills"]}/40 basis fills · {counts["snap_days"]} VRP snap days',
+             "mut")
+    est, binding = earliest_g2fwd(counts, datetime.now().date(),
+                                  structure_start=_date(2026, 8, 10))
+    r += row("G2-FWD earliest verdict", f'{est.isoformat()} if ZERO missed sessions '
+             f'(binding: {binding}; assumes v3 structure trading from 2026-08-10 at 4/day)',
+             "mut")
+    d_reh = (_date(2026, 7, 27) - datetime.now().date()).days
+    r += row("Next milestones", f'XSP rehearsal Mon 07-27 ({"TODAY" if d_reh == 0 else f"{d_reh}d"})'
+             ' · G1.5 first run after ≥10 logger sessions · view-only by owner order 07-20',
+             "mut")
+    status = ('<section class="sec"><span class="eyebrow">Readiness — 2FA required every '
+              'SUNDAY EVENING or the bot idles all week</span>'
+              '<div class="tablewrap"><table><tbody>' + r + '</tbody></table></div></section>')
+    return arch + status
 
 
 def render_body(db_path: str = "trades.db", live=None) -> str:
@@ -327,6 +503,7 @@ def render_body(db_path: str = "trades.db", live=None) -> str:
     <span class="pill" style="border-color:{dot};color:{dot};background:rgba(69,196,184,.06)">{hword.upper()}</span>
   </div>
 
+  {_arch_and_status_html(db_path)}
   <div class="grid">{tiles_html}</div>
   {openpos_html}
   {acct_html}
@@ -353,6 +530,7 @@ function showDay(d){{
 def render_page(db_path: str = "trades.db", live=None) -> str:
     return ("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
             "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            "<meta http-equiv=\"refresh\" content=\"15\">"
             "<title>ODTE-SPY-BOT — status</title></head>"
             "<body style=\"margin:0;background:#0e141b\">"
             + render_body(db_path, live=live) + "</body></html>")
