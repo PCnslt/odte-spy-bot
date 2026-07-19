@@ -81,6 +81,41 @@ Three factual updates from the deep-dive research pass — **no gate criteria ch
    variant (enter prior close, 1DTE, exit next open/noon) may be tabulated alongside G1.5 for
    information; it cannot rescue a FAIL and is not part of any pass criterion.
 
+## Amendment 3 (2026-07-20, registered before any historical data was seen; DeepSeek review incorporated with corrections)
+
+**A. Overnight-VRP arm — UPGRADED to a fully registered second arm** (was exploratory-only).
+Rationale: peer-reviewed evidence locates the VRP overnight (Papagelis–Dotsis, JFM 2025).
+Spec (corrections to the advisor's draft in bold):
+- XSP 1DTE put ratio (buy 1×~25Δ, sell 2×~12Δ), **net credit ≥ $0.10** (a $0.05 credit ≈ $5
+  barely clears the ~$4.60 round-trip commissions — too thin).
+- Entry 15:50–16:00 ET (randomized) on expiry-eve; exit next day 09:35–09:45 **via GUARANTEED
+  combo limit at mid, laddered every 60s, market escalation by 09:45 — never per-leg market
+  orders into the open spread** (advisor draft violated our own execution rules).
+- Gate: iv_1dte_atm − rv_5d ≥ 2.0 pts, term_slope ≥ 1.0, no event ±1 day, VIX < 30.
+- Same G1.5 kill (net PF < 1.0, ≥350 obs) and G2 pass criteria; verdicts independent per arm.
+
+**B. Hedge robustness grid — registered as characterization-only** (run at G2; never alters
+pass/fail): wing delta {3,5,7} × roll {weekly, biweekly, monthly} × budget {10,15,20}% — the
+12-cell grid as proposed; baseline = 5Δ/monthly/20%.
+
+**C. Sizing correction — L_max must be HEDGE-INCLUSIVE (advisor's $190/unit was wrong).**
+A 1×2 put ratio is UNBOUNDED below its short strikes without the wing; any tail-budget sizing
+on the unhedged structure is meaningless. Registered rule: **L_max := worst-case settlement
+loss of the full position including its long wing (payoff flat below the wing).** At entry the
+wing is the nearest listed strike making L_max ≤ 0.5% × NetLiq per unit; if that wing costs
+> 25% of the net credit or drives net credit < $0.10, NO TRADE that day. This rule is
+self-sizing and involves no data peeking.
+
+**D. Capacity note (corrected arithmetic):** XSP ≈ 745.8 (not 7457); strikes ~$5 apart; naked
+12Δ margin ≈ $9–10k/unit (not $25k). At 5% of per-minute volume (ADV 229K → ~587/min) a 90s
+entry absorbs ~44 contracts ≈ 14 spreads → strategy caps ≈ **$1.5–2M account size** on XSP;
+beyond that = multi-window entries or SPX migration. Conclusion unchanged: no compounding path
+through this structure alone.
+
+**E. Tamper-seal hardening (implemented this commit):** the test suite now also asserts this
+document still contains the registered criteria verbatim — code constants and pre-registration
+text can no longer drift apart silently. The runner already refuses to trade on a red suite.
+
 ## Sign-off
 
 Engineer of record: Claude (session 61c9c7d9). Owner: Shawn Rahman.

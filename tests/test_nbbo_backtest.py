@@ -10,6 +10,19 @@ from src.research import nbbo_backtest as nb
 
 
 # --- tamper seal ----------------------------------------------------------------------------
+def test_prereg_document_matches_code_constants():
+    """Code and the registered document must agree — neither can drift silently. Checks the
+    literal criteria strings in docs/PREREGISTRATION_V2.md against the sealed constants."""
+    from pathlib import Path
+    doc = Path(__file__).resolve().parents[1] / "docs" / "PREREGISTRATION_V2.md"
+    text = doc.read_text()
+    assert "PF ≥ 1.15" in text or "PF >= 1.15" in text
+    assert "≥ 350" in text or ">= 350" in text
+    assert nb.SAMPLE_START in text                       # 2022-05-16
+    assert "$0.65" in text or "0.65/contract" in text
+    assert "hedge-inclusive" in text.lower() or "HEDGE-INCLUSIVE" in text
+
+
 def test_preregistered_constants_are_sealed():
     assert nb.SAMPLE_START == "2022-05-16"
     assert nb.PASS_MIN_TRADES == 350
