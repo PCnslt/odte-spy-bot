@@ -20,8 +20,8 @@ The requirement was: *reach the same live metrics from my phone, free, no secret
 
 The tailnet **is** the login. A login form on a static page can't protect a backend anyway —
 only the network boundary can, and Tailscale is a far stronger boundary than a shared password.
-That's why the controls you asked to keep (KILL / RESUME / FORCE FLATTEN) are safe here and
-would **not** have been safe on a public URL.
+(Historical note: the tailnet is also why dashboard controls would have been tolerable here —
+but as of 2026-07-20 the owner ordered the dashboard **view-only**, so no controls exist at all.)
 
 ## One-time setup
 
@@ -36,14 +36,14 @@ private URL, e.g. `https://<mac-name>.<your-tailnet>.ts.net`.
 **On your phone:**
 1. Install **Tailscale** from the App Store / Play Store.
 2. Sign into the **same** account.
-3. Open the `https://<mac-name>.<your-tailnet>.ts.net` URL. Done — same panels, same controls,
+3. Open the `https://<mac-name>.<your-tailnet>.ts.net` URL. Done — the same view-only page,
    auto-refreshing every 15s.
 
 ## What you get remotely
 
 The exact page from `http://127.0.0.1:8090` — Account, Positions, Risk, System health,
-Activity — and, because your tailnet is private to your own devices, the controls too:
-**KILL SWITCH / RESUME** and **FORCE FLATTEN** (with a confirm prompt). Paper account only.
+Architecture map, Activity, Next milestones. **View-only** (owner order, 2026-07-20): the
+dashboard cannot alter the bot from any device; control is terminal-only on the Mac.
 
 ## Security posture
 

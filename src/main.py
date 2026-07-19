@@ -16,7 +16,6 @@ from __future__ import annotations
 import argparse
 import time as _time
 from datetime import datetime, time, timedelta
-from pathlib import Path
 
 from .common import Signal
 from .research.spreads import SpreadTrade
@@ -51,16 +50,6 @@ def _loop_stalled(last_beat: float, now: float, threshold_s: float) -> bool:
     IBKR call froze the whole loop, and because it never EXITED, launchd's crash-restart could
     not recover it. The watchdog below force-exits on a stall so the runner relaunches."""
     return (now - last_beat) > threshold_s
-
-
-ENTRIES_FLAG = Path("logs/entries_disabled.flag")
-
-
-def entries_allowed(flag: Path = ENTRIES_FLAG) -> bool:
-    """War-room kill switch: the dashboard writes this flag; the BOT enforces it here, every
-    poll. Only NEW entries are blocked — exits, defense, flatten and sweeps never consult it.
-    Delete the file (or press RESUME on the dashboard) to re-enable."""
-    return not flag.exists()
 
 
 def healthcheck(cfg, mode: str = "paper") -> bool:
@@ -591,9 +580,9 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                 break
 
             # 2. New entries inside the session window only — never while the account holds
-            # something we aren't managing (1b), and never when the entry kill switch is off.
-            if (open_t <= t < no_new_t and not unmanaged and entries_enabled
-                    and entries_allowed()):
+            # something we aren't managing (1b). Entries are gated by the internal risk
+            # manager + config only; the dashboard is view-only (owner order, 2026-07-20).
+            if open_t <= t < no_new_t and not unmanaged and entries_enabled:
                 # Opening-gap guard (once per session): a big overnight gap means a violent
                 # open the warming-up anomaly detector can't see yet — sit the day out.
                 if gap_day != now.date():

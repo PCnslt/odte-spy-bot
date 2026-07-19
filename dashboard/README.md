@@ -22,11 +22,24 @@ must never sit behind a public URL.
 - **Risk** — kill-switch state, daily-loss-halt usage (% of −$2,000), trades left, consecutive
   losses, VRP telemetry (ATM IV − 20d RV, best-effort from the existing Polygon plan).
 - **System health** — Gateway, bot heartbeat (daily-log freshness), quote logger, morning test
-  gate (PASS/FAIL @ commit).
+  gate (PASS/FAIL @ commit), G2-FWD gate progress (sessions/trades/basis fills), VRP snap days.
+- **Architecture — live module map** — CSS-only box-flow of the whole system, each node colored
+  by its live health signal. Phone-readable.
 - **Recent activity** — last 20 substantive bot actions with timestamps.
-- **Controls (paper only)** — KILL SWITCH writes `logs/entries_disabled.flag`, which the bot's
-  entry gate checks every poll (exits/defense/flatten are never disabled); FORCE FLATTEN runs
-  the audited `--flatten` CLI (confirms flat via `ib.positions()`, distinct client id).
+- **Next milestones** — dated line: XSP rehearsal, G1.5 first run, G2-FWD eligibility.
+
+**VIEW-ONLY (owner order, 2026-07-20):** this dashboard cannot alter the bot. No kill switch,
+no flatten button, no POST endpoints (`tests/test_warroom.py::test_view_only_no_post_no_controls`
+fails the build if any return). Bot control is terminal-only:
+`python -m src.main --flatten --mode paper`, config, or stopping the launchd agents.
+
+## Sunday 2FA ritual (the #1 cause of missed sessions)
+The bot missed 3 of 5 sessions the week of 07-13 because the IB Gateway sat unauthenticated.
+IBKR requires a weekly re-login with mobile 2FA; the Gateway restarts Sunday evenings.
+**Every Sunday evening (or Monday before 09:25):** open IB Gateway on this Mac, log in to the
+paper account, approve the 2FA push on the phone. The runner retries every 2 min until 15:30
+and trades the moment the Gateway authenticates — no restart needed. (IBC auto-restart is NOT
+installed; it cannot bypass 2FA anyway — the phone tap is unavoidable.)
 
 ## Why this is NOT hosted on GitHub Codespaces
 The advisor's spec asked for Codespaces. It cannot work, by design of this system:

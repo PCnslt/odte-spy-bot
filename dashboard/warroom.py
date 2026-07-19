@@ -7,8 +7,9 @@ empty shell, and the free tier is not always-on hosting anyway. The remote read-
 remains the claude.ai artifact snapshot.
 
 Design: stdlib only (no new deps). A background thread refreshes broker truth every ~20s;
-requests render instantly from the cached state. Controls are PAPER-ONLY and indirect: the
-dashboard writes flag files / spawns the existing CLIs — the BOT enforces.
+requests render instantly from the cached state. VIEW-ONLY by owner order (2026-07-20):
+this page can never alter the bot — no POST, no control endpoints, no flag files. Bot
+control is terminal-only (config + python -m src.main --flatten).
 
     python dashboard/warroom.py            # serve http://127.0.0.1:8090
     python dashboard/warroom.py --once     # print one rendered page (smoke test)
@@ -19,7 +20,6 @@ import html
 import json
 import re
 import sqlite3
-import subprocess
 import sys
 import threading
 import time
@@ -33,7 +33,6 @@ sys.path.insert(0, str(REPO))
 PORT = 8090
 REFRESH_S = 15                     # page auto-refresh
 BROKER_POLL_S = 20                 # background broker poll
-KILL_FLAG = REPO / "logs" / "entries_disabled.flag"
 TEST_GATE = REPO / "logs" / "test_gate.txt"
 
 
@@ -168,13 +167,28 @@ class State:
         qfresh = (time.time() - qfiles[-1].stat().st_mtime) < 180 if qfiles else False
         heartbeat = (time.time() - log.stat().st_mtime) < 120 if log.exists() else False
         test_line = TEST_GATE.read_text().strip() if TEST_GATE.exists() else ""
+        # G2-FORWARD progress (docs/PREREGISTRATION_G2FWD.md): sessions = archive days;
+        # trades toward the gate = registered-structure rounds (0 until that strategy trades);
+        # basis fills = real fills usable by scripts/basis.py.
+        sessions = len({f.name[:8] for f in qfiles if not f.name.endswith("_snap.csv.gz")})
+        snaps = len([f for f in qfiles if f.name.endswith("_snap.csv.gz")])
+        basis_fills = 0
+        try:
+            import sqlite3
+            c = sqlite3.connect(REPO / "trades.db")
+            basis_fills = c.execute("SELECT COUNT(*) FROM trades "
+                                    "WHERE exit_cost_fill IS NOT NULL").fetchone()[0]
+            c.close()
+        except Exception:
+            pass
         return {
             "now": datetime.now().strftime("%Y-%m-%d %H:%M:%S ET"),
             "day": day, "broker": broker, "broker_age": broker_age, "vrp": vrp,
             "ledger": led, "risk": rs, "trades": todays_trades(REPO / "trades.db", day),
-            "actions": tail_actions(log), "kill": KILL_FLAG.exists(),
+            "actions": tail_actions(log),
             "logger_fresh": qfresh, "heartbeat": heartbeat, "test_gate": test_line,
             "log_exists": log.exists(),
+            "g2fwd": {"sessions": sessions, "snap_days": snaps, "basis_fills": basis_fills},
         }
 
 
@@ -207,7 +221,6 @@ overflow:auto;background:#0b1016;border-radius:8px;padding:10px 12px}
 table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:13px}
 td,th{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
 th{color:var(--na);font-size:10.5px;text-transform:uppercase;letter-spacing:.1em}
-.controls{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
 .arch{display:flex;flex-direction:column;gap:2px;margin-top:6px}
 .arow{display:flex;gap:8px;flex-wrap:wrap}
 .an{flex:1 1 240px;border:1px solid var(--line);border-left:4px solid var(--na);
@@ -217,10 +230,6 @@ border-radius:8px;padding:8px 10px;background:var(--bg)}
 .an.ok{border-left-color:var(--ok)}.an.warn{border-left-color:var(--warn)}
 .an.crit{border-left-color:var(--crit)}
 .aflow{color:var(--na);text-align:center;font-size:12px;line-height:1.2}
-button{font-family:var(--mono);font-size:15px;padding:12px 18px;border-radius:10px;
-border:1px solid var(--line);background:#1d2630;color:var(--txt);cursor:pointer}
-button.danger{border-color:var(--crit);color:var(--crit)}
-button.go{border-color:var(--ok);color:var(--ok)}
 .note{color:var(--mut);font-size:13px;margin-top:8px}
 """
 
@@ -275,8 +284,7 @@ def render(s: dict) -> str:
                   f'{st} {"" if t["pnl"] is None else fmt_money(t["pnl"])}')
 
     # risk
-    risk = kv("Entries", "DISABLED (kill switch)" if s["kill"] else "enabled",
-              "crit" if s["kill"] else "ok")
+    risk = kv("Entries", "risk-manager gated", "ok")
     risk += kv("Daily-loss halt use", f"{halt_pct:.0f}% of −$2,000",
                sev(halt_pct < 60, warn=halt_pct < 100))
     risk += kv("Halted", str(bool(rs.get("halted", False))),
@@ -300,6 +308,11 @@ def render(s: dict) -> str:
     hlth += kv("Test gate", tg or "unknown",
                "ok" if "PASS" in tg else ("crit" if "FAIL" in tg else "na"))
     hlth += kv("Broker data age", f'{int(s["broker_age"])}s', "na")
+    g2f = s.get("g2fwd", {})
+    hlth += kv("G2-FWD sessions", f'{g2f.get("sessions", 0)} / 60', "na")
+    hlth += kv("G2-FWD trades", "0 / 200 (structure not yet trading)", "na")
+    hlth += kv("G2-FWD basis fills", f'{g2f.get("basis_fills", 0)} / 40', "na")
+    hlth += kv("VRP snap days", f'{g2f.get("snap_days", 0)} (15:50 + 09:35 marks)', "na")
 
     acts = "".join(f'<div><span class="t">{t}</span>{html.escape(msg)}</div>'
                    for t, msg in s["actions"]) or '<div class="na">no actions yet today</div>'
@@ -327,9 +340,8 @@ def render(s: dict) -> str:
         + node("War room :8090", "this page · reads files + broker snapshot",
                "ok")
         + '</div><div class="aflow">▼</div><div class="arow">'
-        + node("Kill switch", "flag → entry gate each poll (exits never blocked)",
-               "crit" if s["kill"] else "ok")
-        + node("Gates G1.5→G2", "sealed kill-screens; logger archive feeds them",
+        + node("Entry gate", "risk manager + config only; dashboard is view-only", "ok")
+        + node("Gates G1.5 → G2-FWD", "sealed kill-screens; logger archive feeds them",
                "ok" if "PASS" in tg else ("crit" if "FAIL" in tg else "na"))
         + '</div></div>')
 
@@ -347,17 +359,11 @@ def render(s: dict) -> str:
 </div>
 <div class="card" style="margin-top:14px"><h2>Architecture — live module map</h2>{arch}</div>
 <div class="card" style="margin-top:14px"><h2>Recent activity</h2><div class="log">{acts}</div></div>
-<div class="card" style="margin-top:14px"><h2>Controls — paper account only</h2>
-<div class="controls">
-<form method="post" action="/control/{'resume' if s['kill'] else 'kill'}">
-<button class="{'go' if s['kill'] else 'danger'}">
-{'RESUME ENTRIES' if s['kill'] else 'KILL SWITCH — stop new entries'}</button></form>
-<form method="post" action="/control/flatten" onsubmit="return confirm('Force-flatten ALL paper positions now?')">
-<button class="danger">FORCE FLATTEN (paper)</button></form>
-</div>
-<p class="note">Kill switch writes <code>logs/entries_disabled.flag</code> — the bot's entry
-gate checks it every poll; exits and safety systems are never disabled. Force-flatten runs the
-same audited <code>--flatten</code> CLI the runner uses (confirms flat via ib.positions()).</p>
+<div class="card" style="margin-top:14px"><h2>Next milestones</h2>
+<p class="note">XSP rehearsal (separate trades_rehearsal.db): target Mon 2026-07-27 ·
+G1.5 harness ~07-27, first run after ≥10 logger sessions (~08-07) ·
+G2-FWD earliest eligibility: 60 sessions / 200 structure trades / 40 basis fills (~Q4 2026).
+This dashboard is VIEW-ONLY — bot control is terminal-only by owner order (2026-07-20).</p>
 </div>
 </div></body></html>"""
 
@@ -381,18 +387,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self._send(200, render(STATE.snapshot()))
 
-    def do_POST(self):
-        if self.path == "/control/kill":
-            KILL_FLAG.parent.mkdir(parents=True, exist_ok=True)
-            KILL_FLAG.write_text(datetime.now().isoformat())
-        elif self.path == "/control/resume":
-            KILL_FLAG.unlink(missing_ok=True)
-        elif self.path == "/control/flatten":
-            subprocess.Popen([sys.executable, "-m", "src.main", "--flatten", "--mode",
-                              "paper"], cwd=str(REPO))
-        self.send_response(303)
-        self.send_header("Location", "/")
-        self.end_headers()
+    # NO do_POST: this dashboard is VIEW-ONLY by owner order (2026-07-20). It must never be
+    # able to alter the bot — control is terminal-only (python -m src.main --flatten, config).
 
 
 def _poller():                                       # pragma: no cover
