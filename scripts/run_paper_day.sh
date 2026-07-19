@@ -61,6 +61,13 @@ if [ "$(git rev-parse HEAD)" != "$PRE_PULL" ]; then
     echo "Pulled $(git rev-parse --short HEAD); tests pass."
   fi
 fi
+# War-room marker: what the dashboard's "Test gate" light reads.
+mkdir -p "$REPO/logs"
+if [ "$TESTS_OK" -eq 1 ]; then
+  echo "PASS $(date '+%Y-%m-%d %H:%M') @ $(git rev-parse --short HEAD)" > "$REPO/logs/test_gate.txt"
+else
+  echo "FAIL $(date '+%Y-%m-%d %H:%M') — reverted to $PRE_PULL, not trading" > "$REPO/logs/test_gate.txt"
+fi
 
 # Wait until IB Gateway is up AND authenticated, retrying with backoff. Do NOT exit-and-let-
 # launchd-hot-restart on failure — that thrashed 100+ relaunches on 2FA-login mornings. This
@@ -101,6 +108,12 @@ echo "$(date +%H:%M) Starting the session."
 pkill -f "src\.research\.quote_logger" 2>/dev/null || true
 "$REPO/venv/bin/python" -m src.research.quote_logger >>"$LOG" 2>&1 &
 QLOG_PID=$!
+
+# War-room dashboard (http://127.0.0.1:8090): read-only panels + paper-only controls. Runs
+# where the data lives (this Mac). Left running after the session so evenings show EOD state.
+pkill -f "dashboard/warroom.py" 2>/dev/null || true
+"$REPO/venv/bin/python" "$REPO/dashboard/warroom.py" >>"$LOG" 2>&1 &
+echo "$(date +%H:%M) War room at http://127.0.0.1:8090"
 
 # caffeinate -i: keep the Mac from idle-sleeping while the session runs.
 caffeinate -i "$REPO/venv/bin/python" -m src.main --mode paper --daily
