@@ -116,6 +116,35 @@ through this structure alone.
 document still contains the registered criteria verbatim — code constants and pre-registration
 text can no longer drift apart silently. The runner already refuses to trade on a red suite.
 
+## Amendment 4 (2026-07-20, registered before any historical data was seen)
+
+**A. Advisor's final triple (25Δ/12Δ/2Δ as 743/740/737 "zero-floor butterfly at a $4.00 net
+credit, L_max = $0") — REJECTED as a no-arbitrage violation.** A long butterfly's payoff is
+≥ 0 everywhere, therefore it trades at a DEBIT; "collect a credit and never lose" is a pricing
+arithmetic error (their wing priced at −$0.18 and a 12Δ put at 51% of a 25Δ put — both broken).
+Machine guard added: `src/strategy/structure_math.py::violates_no_free_lunch` — any spec with
+credit > 0 and L_max ≤ 0 is auto-rejected, test-sealed (`tests/test_structure_math.py`).
+
+**B. Registered L_max formula** (implements Amendment 3C): for +1 put K_l, −2 puts K_s,
++1 wing K_w (K_w < K_s < K_l): floor = (K_l + K_w − 2K_s) pts; **L_max = max(0, −(credit +
+min(0, floor)×100))** dollars/unit. Code-sealed.
+
+**C. Feasibility finding (closed-form sanity only — NOT a backtest, no data consumed):** a
+fundable triple EXISTS near **long ≈ 25Δ, shorts ≈ 18–20Δ, wing ≈ 3–5Δ** (≈ $5–6 total span
+at July-2026 vol): net credit after wing ≈ $20–35 ≥ $10, hedge-inclusive L_max ≈ $360–420
+≤ $500 = 0.5% × $100k. **Deltas are targets; day-to-day selection remains the Amendment 3C
+rule** (wing chosen so L_max ≤ 0.5% NetLiq; skip if credit < $0.10 or wing > 25% of credit).
+The advisor's "12Δ shorts $3 below a 25Δ long" cannot produce a credit; shorts must sit nearer
+the long. If live quotes show no triple satisfying the rule, the registered outcome is
+"structure unfundable — no trade," never a relaxed rule.
+
+**D. Margin/scaling corrections to the advisor's table:** with the wing the position is
+DEFINED-RISK — margin ≈ max loss (~$0.4k/unit), not $20–21k (that was naked-put margin applied
+to a hedged structure). Binding constraints are therefore the capacity ceiling (~44 contracts
+per 90s window ≈ 11 units at 4 contracts/unit) and the tail budget — strategy cap ≈
+**$0.9–1M account on XSP** at 0.5%/day (11 × ~$420 / 0.005), SPX beyond. Broker margin numbers
+remain subject to `whatIfOrder()` verification at G4.
+
 ## Sign-off
 
 Engineer of record: Claude (session 61c9c7d9). Owner: Shawn Rahman.
