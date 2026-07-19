@@ -16,11 +16,11 @@ def test_prereg_document_matches_code_constants():
     from pathlib import Path
     doc = Path(__file__).resolve().parents[1] / "docs" / "PREREGISTRATION_V2.md"
     text = doc.read_text()
-    assert "PF ≥ 1.15" in text or "PF >= 1.15" in text
-    assert "≥ 350" in text or ">= 350" in text
-    assert nb.SAMPLE_START in text                       # 2022-05-16
-    assert "$0.65" in text or "0.65/contract" in text
-    assert "hedge-inclusive" in text.lower() or "HEDGE-INCLUSIVE" in text
+    flat = text.replace("**", "")                        # markdown bold must not defeat the seal
+    assert "1.15" in flat and "350" in flat
+    assert nb.SAMPLE_START in flat                       # 2022-05-16
+    assert "0.65" in flat
+    assert "hedge-inclusive" in flat.lower()
 
 
 def test_preregistered_constants_are_sealed():
