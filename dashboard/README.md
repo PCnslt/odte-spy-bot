@@ -4,8 +4,16 @@
 
     bash ~/trading/odte-spy-bot/dashboard/run_warroom.sh
 
-then open **http://127.0.0.1:8090**. It also starts automatically with every trading session
-(the 09:25 runner) and stays up after the close. Auto-refreshes every 15s.
+then open **http://127.0.0.1:8090**. Auto-refreshes every 15s.
+
+**Always-on (recommended)** — install it as a launchd service so it stays up 24/7 (and reachable
+from your phone; see below): `bash ~/trading/odte-spy-bot/dashboard/setup_tunnel.sh`. Once
+installed, the launchd agent `com.pcnslt.warroom` owns `:8090`; the 09:25 runner no longer
+starts its own copy.
+
+**Remote access from your phone** — private, free, no password, nothing on GitHub: see
+[REMOTE.md](REMOTE.md) (Tailscale). Not GitHub Pages — a dashboard with live trade controls
+must never sit behind a public URL.
 
 ## Panels
 - **Account** — NetLiq / day P&L / total P&L vs the $1M deposit; LIVE from IB Gateway when up,

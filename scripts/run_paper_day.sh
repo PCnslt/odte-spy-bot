@@ -109,11 +109,10 @@ pkill -f "src\.research\.quote_logger" 2>/dev/null || true
 "$REPO/venv/bin/python" -m src.research.quote_logger >>"$LOG" 2>&1 &
 QLOG_PID=$!
 
-# War-room dashboard (http://127.0.0.1:8090): read-only panels + paper-only controls. Runs
-# where the data lives (this Mac). Left running after the session so evenings show EOD state.
-pkill -f "dashboard/warroom.py" 2>/dev/null || true
-"$REPO/venv/bin/python" "$REPO/dashboard/warroom.py" >>"$LOG" 2>&1 &
-echo "$(date +%H:%M) War room at http://127.0.0.1:8090"
+# War-room dashboard: now owned by the always-on launchd agent (com.pcnslt.warroom) so the
+# phone can reach it 24/7 via Tailscale, not just during a session. The runner must NOT start
+# its own copy — a second process would fight the KeepAlive agent for :8090. Install once with
+# `bash dashboard/setup_tunnel.sh` (see dashboard/REMOTE.md). Local URL stays http://127.0.0.1:8090.
 
 # caffeinate -i: keep the Mac from idle-sleeping while the session runs.
 caffeinate -i "$REPO/venv/bin/python" -m src.main --mode paper --daily

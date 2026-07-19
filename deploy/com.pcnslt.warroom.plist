@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Always-on war room (localhost:8090). Independent of the trading session so the phone can
+     reach it any time via Tailscale. KeepAlive restarts it on crash/reboot. Localhost-bound:
+     nothing is exposed until `tailscale serve` proxies it to YOUR tailnet (setup_tunnel.sh). -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.pcnslt.warroom</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/pcnslt/trading/odte-spy-bot/venv/bin/python</string>
+    <string>/Users/pcnslt/trading/odte-spy-bot/dashboard/warroom.py</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/pcnslt/trading/odte-spy-bot</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>/Users/pcnslt/trading/odte-spy-bot/logs/warroom.out</string>
+  <key>StandardErrorPath</key><string>/Users/pcnslt/trading/odte-spy-bot/logs/warroom.err</string>
+</dict>
+</plist>
