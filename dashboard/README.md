@@ -35,6 +35,33 @@ controls** — nothing on this page can alter the bot (owner order, 2026-07-20; 
     launchctl load ~/Library/LaunchAgents/com.pcnslt.dashboard.plist    # start (auto on boot)
     launchctl unload ~/Library/LaunchAgents/com.pcnslt.dashboard.plist  # stop
 
+## Remote access (phone browser, free, no app) — Cloudflare tunnel
+
+**One command on the Mac:**
+
+    bash dashboard/setup_remote.sh
+
+It installs `cloudflared` (free), asks YOU to set a username/password (stored as a sha256
+hash in `~/.config/odte/dash_auth` — outside git; no plaintext ever written; the repo
+contains no secret), and starts the tunnel agent. It prints your **https URL**
+(`https://<random>.trycloudflare.com`) — open it on the phone, enter the login you chose.
+Safe because the page is **view-only (sealed by test)** and the server enforces the login on
+every request with **no localhost bypass** (tunnel traffic arrives as localhost). The tunnel
+agent refuses to start if the auth file is missing.
+
+- **Quick mode (default)**: zero accounts. Caveat: the URL **rotates when the tunnel
+  restarts** — current URL is always the last `trycloudflare` line in `logs/tunnel.log`.
+- **Named mode (stable URL + email-OTP login)**: needs a free Cloudflare account **and a
+  domain on it** (that's the caveat DeepSeek's spec missed — Cloudflare Access can only
+  protect a hostname on your own zone). If you have a domain: `cloudflared tunnel login`,
+  `cloudflared tunnel create odte-dash`, write `~/.cloudflared/config.yml` (tunnel id +
+  `ingress: [{hostname: dash.<your-domain>, service: http://127.0.0.1:8090}, ...]`),
+  add the DNS route, protect the hostname with an Access email-OTP policy in Zero Trust →
+  Access → Applications. The same agent auto-detects the config and switches to named mode.
+- Data note: Cloudflare proxies (does not persist) the page; it is marked non-cacheable by
+  auth. Revoke access any time: delete `~/.config/odte/dash_auth` (auth gone → tunnel shim
+  refuses on next start) or `launchctl unload ~/Library/LaunchAgents/com.pcnslt.dashboard-tunnel.plist`.
+
 ## Sunday 2FA ritual (the #1 cause of missed sessions)
 3 of 5 sessions the week of 07-13 were lost solely because the Gateway sat unauthenticated.
 **Every Sunday evening (or Monday before 09:25): open IB Gateway, log in to paper, approve

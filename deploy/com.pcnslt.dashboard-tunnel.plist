@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Cloudflare tunnel for the VIEW-ONLY dashboard (dashboard/run_tunnel.sh). The shim
+     refuses to expose anything until the owner-created auth file exists, and exits 0 on
+     missing preconditions so KeepAlive(SuccessfulExit=false) never thrashes. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.pcnslt.dashboard-tunnel</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/pcnslt/trading/odte-spy-bot/dashboard/run_tunnel.sh</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/pcnslt/trading/odte-spy-bot</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>ThrottleInterval</key><integer>15</integer>
+  <key>StandardOutPath</key><string>/Users/pcnslt/trading/odte-spy-bot/logs/tunnel.out</string>
+  <key>StandardErrorPath</key><string>/Users/pcnslt/trading/odte-spy-bot/logs/tunnel.err</string>
+</dict>
+</plist>

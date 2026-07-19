@@ -33,3 +33,8 @@ dist/
 .idea/
 .vscode/
 AUDIT_BUNDLE.txt
+
+# remote-dashboard secrets (never commit)
+.cloudflared/
+*dash_auth*
+logs/tunnel.log
