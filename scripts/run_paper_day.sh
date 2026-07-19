@@ -13,6 +13,8 @@ LOG="logs/daily_$(date +%Y%m%d).log"
 exec >> "$LOG" 2>&1
 
 echo "=== $(date) run_paper_day starting ==="
+echo "2FA: weekly IBKR re-login is required SUNDAY EVENING. If the Gateway is logged out,"
+echo "     this session WAITS (retrying to 15:30) and trades the moment you log in."
 
 # Make EVERY git op fail-fast, never hang. Incident 2026-07-07: the EOD `git push` wedged on
 # the network/credentials, the runner never exited, and a hung runner would block the next

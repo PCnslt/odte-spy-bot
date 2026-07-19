@@ -92,6 +92,44 @@ def tail_actions(log: Path, n: int = 20) -> list[tuple[str, str]]:
     return out[-n:]
 
 
+def session_outcome(text: str) -> str:
+    """Classify one daily log: ran / missed_2fa / missed_testgate / gap_blocked / weekend.
+    Marker strings are the runner's own echoes (scripts/run_paper_day.sh)."""
+    if "Weekend; exiting" in text:
+        return "weekend"
+    if "TESTS FAILED" in text or "REFUSING to trade" in text:
+        return "missed_testgate"
+    if "no authenticated Gateway" in text and "Starting the session" not in text:
+        return "missed_2fa"
+    if "GAP GUARD" in text:
+        return "gap_blocked"                     # session ran; entries blocked by design
+    if "Starting the session" in text:
+        return "ran"
+    return "unknown"
+
+
+def recent_outcomes(log_dir: Path, n: int = 10) -> list[tuple[str, str]]:
+    """[(YYYYMMDD, outcome)] for the last n weekday session logs, oldest first."""
+    try:
+        logs = sorted(log_dir.glob("daily_*.log"))[-n - 4:]   # slack for weekend files
+    except OSError:
+        return []
+    out = [(p.name[6:14], session_outcome(p.read_text(errors="replace"))) for p in logs]
+    return [(d, o) for d, o in out if o != "weekend"][-n:]
+
+
+def last_auth_date(log_dir: Path) -> str | None:
+    """Most recent session date whose log shows an authenticated Gateway (2FA proxy)."""
+    try:
+        files = sorted(log_dir.glob("daily_*.log"), reverse=True)
+    except OSError:
+        return None
+    for p in files:
+        if "Gateway authenticated" in p.read_text(errors="replace"):
+            return p.name[6:14]
+    return None
+
+
 def sev(ok: bool | None, warn: bool = False) -> str:
     """Status class: green/amber/red/grey."""
     if ok is None:
@@ -189,6 +227,8 @@ class State:
             "logger_fresh": qfresh, "heartbeat": heartbeat, "test_gate": test_line,
             "log_exists": log.exists(),
             "g2fwd": {"sessions": sessions, "snap_days": snaps, "basis_fills": basis_fills},
+            "outcomes": recent_outcomes(REPO / "logs"),
+            "last_auth": last_auth_date(REPO / "logs"),
         }
 
 
@@ -313,6 +353,18 @@ def render(s: dict) -> str:
     hlth += kv("G2-FWD trades", "0 / 200 (structure not yet trading)", "na")
     hlth += kv("G2-FWD basis fills", f'{g2f.get("basis_fills", 0)} / 40', "na")
     hlth += kv("VRP snap days", f'{g2f.get("snap_days", 0)} (15:50 + 09:35 marks)', "na")
+    outs = s.get("outcomes", [])
+    missed = [(d, o) for d, o in outs if o.startswith("missed")]
+    hlth += kv(f"Sessions missed (last {len(outs) or 10})",
+               f'{len(missed)}' + (f' — {missed[-1][1].replace("missed_", "")} '
+                                   f'{missed[-1][0][4:6]}/{missed[-1][0][6:]}' if missed else ""),
+               "ok" if not missed else ("warn" if len(missed) <= 1 else "crit"))
+    la = s.get("last_auth")
+    auth_days = (datetime.now() - datetime.strptime(la, "%Y%m%d")).days if la else None
+    hlth += kv("2FA / Gateway auth", (f'last OK {la[:4]}-{la[4:6]}-{la[6:]} · '
+                                      f'next: SUNDAY EVENING') if la else "never seen",
+               "crit" if (auth_days is None or auth_days >= 5) else
+               ("warn" if auth_days >= 3 else "ok"))
 
     acts = "".join(f'<div><span class="t">{t}</span>{html.escape(msg)}</div>'
                    for t, msg in s["actions"]) or '<div class="na">no actions yet today</div>'
@@ -345,6 +397,19 @@ def render(s: dict) -> str:
                "ok" if "PASS" in tg else ("crit" if "FAIL" in tg else "na"))
         + '</div></div>')
 
+    # milestones — computed each render so the card stays current as dates are hit
+    today = datetime.now().date()
+    def _dleft(iso):
+        d = (datetime.strptime(iso, "%Y-%m-%d").date() - today).days
+        return "TODAY" if d == 0 else (f"{d}d away" if d > 0 else f"{-d}d ago")
+    g2s = int(s.get("g2fwd", {}).get("sessions", 0) or 0)
+    milestones = (
+        f"XSP rehearsal (separate trades_rehearsal.db): Mon 2026-07-27 ({_dleft('2026-07-27')}) · "
+        f"G1.5 first run: needs ≥10 logger sessions, have {g2s} "
+        f"({max(0, 10 - g2s)} to go) · "
+        f"G2-FWD eligibility: {g2s}/60 sessions, 0/200 structure trades, "
+        f'{int(s.get("g2fwd", {}).get("basis_fills", 0) or 0)}/40 basis fills (~Q4 2026)')
+
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="refresh" content="{REFRESH_S}">
@@ -360,10 +425,10 @@ def render(s: dict) -> str:
 <div class="card" style="margin-top:14px"><h2>Architecture — live module map</h2>{arch}</div>
 <div class="card" style="margin-top:14px"><h2>Recent activity</h2><div class="log">{acts}</div></div>
 <div class="card" style="margin-top:14px"><h2>Next milestones</h2>
-<p class="note">XSP rehearsal (separate trades_rehearsal.db): target Mon 2026-07-27 ·
-G1.5 harness ~07-27, first run after ≥10 logger sessions (~08-07) ·
-G2-FWD earliest eligibility: 60 sessions / 200 structure trades / 40 basis fills (~Q4 2026).
-This dashboard is VIEW-ONLY — bot control is terminal-only by owner order (2026-07-20).</p>
+<p class="note">{milestones}</p>
+<p class="note">This dashboard is VIEW-ONLY — bot control is terminal-only by owner order
+(2026-07-20). <b>2FA reminder: weekly IBKR re-login required SUNDAY EVENING — without it the
+bot cannot trade all week.</b></p>
 </div>
 </div></body></html>"""
 
