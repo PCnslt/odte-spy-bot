@@ -10,6 +10,7 @@ value, so features stay honest.
 from __future__ import annotations
 
 import math
+import time
 from datetime import date
 from typing import Optional
 
@@ -159,7 +160,14 @@ class IBKRFeed:
     def leg_quotes(self, spread: dict, timeout_s: float = 4.0) -> Optional[dict]:
         """REAL bid/ask for both legs via a market-data snapshot (works with delayed data).
         Returns {short_bid, short_ask, long_bid, long_ask, mid_credit} or None if any side
-        is unavailable — callers decide whether that skips the trade (require_quotes)."""
+        is unavailable — callers decide whether that skips the trade (require_quotes).
+
+        P0 2026-07-21: after the weekend Gateway update (srv 176), DELAYED snapshots return
+        before the quote ticks land — reading immediately after reqTickers saw NaN bids all
+        session (22k Warning-10167s, every entry skipped 07-20/21). Ticker objects update in
+        place, so poll them for up to timeout_s before declaring a side unavailable. The
+        quote logger never hit this only because its 60-contract batches take seconds — an
+        accidental wait this makes explicit."""
         try:
             tickers = self.ib.reqTickers(spread["short"], spread["long"])
         except Exception as exc:
@@ -168,12 +176,23 @@ class IBKRFeed:
         if len(tickers) != 2:
             return None
         s, l = tickers
-        vals = {"short_bid": s.bid, "short_ask": s.ask,
-                "long_bid": l.bid, "long_ask": l.ask}
-        for k, v in vals.items():
-            if v is None or v != v or v < 0:   # NaN or invalid
-                log.info("leg_quotes: %s unavailable", k)
-                return None
+
+        def _vals():
+            return {"short_bid": s.bid, "short_ask": s.ask,
+                    "long_bid": l.bid, "long_ask": l.ask}
+
+        def _bad(vs):
+            return [k for k, v in vs.items() if v is None or v != v or v < 0]
+
+        deadline = time.monotonic() + timeout_s
+        vals = _vals()
+        while _bad(vals) and time.monotonic() < deadline:
+            self.ib.sleep(0.25)                # pump the loop; delayed ticks land in place
+            vals = _vals()
+        missing = _bad(vals)
+        if missing:
+            log.info("leg_quotes: %s unavailable after %.1fs", missing[0], timeout_s)
+            return None
         mid_credit = ((vals["short_bid"] + vals["short_ask"]) / 2
                       - (vals["long_bid"] + vals["long_ask"]) / 2)
         return {**vals, "mid_credit": mid_credit}
