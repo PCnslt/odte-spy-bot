@@ -106,6 +106,18 @@ def run(symbol: str = "XSP", underlying_symbol: str = "XSP") -> None:   # pragma
             if not spot or spot != spot:
                 ib.sleep(CADENCE_S)
                 continue
+            # Live intraday tape for the dashboard: one (ts, spot) line per sweep. XSP index
+            # level ≈ SPY (proxy, labeled as such on the page); the EOD --pull-spy overwrite
+            # in spy_intraday_*.csv stays the canonical SPY tape. Fail-soft.
+            try:
+                lp = Path(f"logs/live_spot_{day}.csv")
+                new_lp = not lp.exists()
+                with lp.open("a") as lf:
+                    if new_lp:
+                        lf.write("ts,close\n")
+                    lf.write(f"{datetime.now().isoformat(timespec='seconds')},{float(spot):.2f}\n")
+            except Exception:
+                pass
             opts = [Option(symbol, expiry, k, r, "SMART", currency="USD")
                     for k in strike_window(float(spot)) for r in ("P", "C")]
             opts = [o for o in ib.qualifyContracts(*opts) if o.conId]

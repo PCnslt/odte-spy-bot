@@ -175,6 +175,10 @@ footer{margin-top:36px;padding-top:16px;border-top:1px solid var(--line);color:v
 .an span{color:var(--muted);font-size:12px}
 .an.good{border-left-color:var(--good)}.an.warn{border-left-color:var(--warn)}.an.crit{border-left-color:var(--crit)}
 .aflow{color:var(--faint);text-align:center;font-size:11px;line-height:1.2}
+details{border:1px solid var(--line);border-radius:10px;margin:8px 0;background:var(--panel)}
+details summary{cursor:pointer;padding:10px 14px;font-family:var(--mono);font-size:12.5px;color:var(--muted)}
+details[open] summary{color:var(--text);border-bottom:1px solid var(--line)}
+details .log{border:0;border-radius:0 0 10px 10px;max-height:340px}
 """
 
 def _account_svg(pts: list[tuple[str, float]]) -> str:
@@ -314,6 +318,71 @@ def _arch_and_status_html(db_path: str) -> str:
               'SUNDAY EVENING or the bot idles all week</span>'
               '<div class="tablewrap"><table><tbody>' + r + '</tbody></table></div></section>')
     return arch + status
+
+
+def _live_tape_html(db_path: str) -> str:
+    """Intraday LIVE chart from the quote logger's per-minute spot file. Shown only while
+    the canonical EOD SPY tape for today doesn't exist yet; trade markers come from
+    trades.db via the same event builder the EOD tape uses. XSP index level ≈ SPY — an
+    explicitly-labeled proxy until the EOD pull writes the real SPY tape."""
+    day = datetime.now().date()
+    if Path(f"logs/spy_intraday_{day:%Y%m%d}.csv").exists():
+        return ""                               # after the close: the real tape takes over
+    lp = Path(f"logs/live_spot_{day:%Y%m%d}.csv")
+    if not lp.exists():
+        return ""
+    pts = []
+    try:
+        for ln in lp.read_text().splitlines()[1:]:
+            ts, px = ln.split(",")
+            t = datetime.fromisoformat(ts)
+            pts.append((t.hour * 60 + t.minute - 570, float(px)))   # minutes since 09:30
+    except Exception:
+        return ""
+    if len(pts) < 2:
+        return ""
+    try:
+        from .session_chart import render_svg, trade_events
+        svg = render_svg(pts, trade_events(db_path, day))
+    except Exception:
+        return ""
+    if not svg:
+        return ""
+    return ('<section class="sec"><span class="eyebrow">Today — LIVE tape · XSP index '
+            f'(≈SPY proxy, 1-min, {len(pts)} points; becomes the official SPY tape at the '
+            'close)</span>'
+            f'<div class="chart">{svg}</div></section>')
+
+
+def _activity_history_html(n_days: int = 10) -> str:
+    """Collapsible per-day action history from the daily logs (newest first). The always-open
+    'Recent activity' section stays today-only; this is the browsable archive behind it."""
+    try:
+        from .session_chart import tail_activity
+        logs = sorted(Path("logs").glob("daily_*.log"), reverse=True)[:n_days + 4]
+    except Exception:
+        return ""
+    blocks = []
+    for p in logs:
+        try:
+            text = p.read_text(errors="replace")
+        except OSError:
+            continue
+        if "Weekend; exiting" in text:
+            continue
+        acts = tail_activity(text, 30)
+        if not acts:
+            continue
+        d = p.name[6:14]
+        rows = "".join(f'<div><span class="t">{t}</span>{m}</div>' for t, m in acts)
+        blocks.append(f'<details><summary>{d[:4]}-{d[4:6]}-{d[6:]} — {len(acts)} actions'
+                      f'</summary><div class="log">{rows}</div></details>')
+        if len(blocks) >= n_days:
+            break
+    if not blocks:
+        return ""
+    return ('<section class="sec"><span class="eyebrow">Activity history — all sessions, '
+            'tap a day</span>' + "".join(blocks) + '</section>')
 
 
 def render_body(db_path: str = "trades.db", live=None) -> str:
@@ -507,12 +576,14 @@ def render_body(db_path: str = "trades.db", live=None) -> str:
 
   {_arch_and_status_html(db_path)}
   <div class="grid">{tiles_html}</div>
+  {_live_tape_html(db_path)}
   {openpos_html}
   {acct_html}
   {tape_html}
   {hist_html}
   {trades_html}
   {log_html}
+  {_activity_history_html()}
 
   <footer><span>Paper trading · not financial advice</span>
     <span class="eyebrow">updated {now}</span></footer>

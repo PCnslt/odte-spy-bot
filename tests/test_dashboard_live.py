@@ -65,6 +65,36 @@ def test_render_page_includes_live_status_and_refresh():
         assert gone not in h
 
 
+def test_live_tape_parses_spot_csv(tmp_path, monkeypatch):
+    """Live intraday chart appears when the logger's spot file exists and no EOD tape yet."""
+    from src.dashboard_html import _live_tape_html
+    from datetime import datetime
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "logs").mkdir()
+    day = datetime.now().strftime("%Y%m%d")
+    (tmp_path / "logs" / f"live_spot_{day}.csv").write_text(
+        "ts,close\n"
+        f"{datetime.now().strftime('%Y-%m-%d')}T09:31:00,745.10\n"
+        f"{datetime.now().strftime('%Y-%m-%d')}T09:32:00,745.60\n")
+    h = _live_tape_html(str(tmp_path / "missing.db"))
+    assert "LIVE tape" in h and "svg" in h
+    # once the canonical EOD tape exists, the live section yields to it
+    (tmp_path / "logs" / f"spy_intraday_{day}.csv").write_text("ts,close\n")
+    assert _live_tape_html(str(tmp_path / "missing.db")) == ""
+
+
+def test_activity_history_collapsible(tmp_path, monkeypatch):
+    from src.dashboard_html import _activity_history_html
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs" / "daily_20260722.log").write_text(
+        "2026-07-22 10:12:12,754 INFO    alerts | alert: [INFO] OPEN bull_put x2\n")
+    (tmp_path / "logs" / "daily_20260718.log").write_text("Weekend; exiting.\n")
+    h = _activity_history_html()
+    assert "<details>" in h and "2026-07-22" in h
+    assert "2026-07-18" not in h                     # weekend files excluded
+
+
 def test_serve_is_view_only():
     spec = importlib.util.spec_from_file_location("dserve", ROOT / "dashboard" / "serve.py")
     mod = importlib.util.module_from_spec(spec)
