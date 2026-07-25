@@ -52,6 +52,36 @@ def _loop_stalled(last_beat: float, now: float, threshold_s: float) -> bool:
     return (now - last_beat) > threshold_s
 
 
+def write_feed_state(connected: bool, path: str = "logs/feed_state.json") -> None:
+    """Mirror the feed-connection state for the dashboard's readiness light. Fail-soft."""
+    try:
+        import json
+        from pathlib import Path as _P
+        p = _P(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"connected": bool(connected),
+                                 "ts": datetime.now().isoformat(timespec="seconds")}))
+    except Exception:
+        pass
+
+
+def apply_rehearsal(cfg):
+    """--rehearsal: run the XSP dress rehearsal (Section 10 / runbook) against a SEPARATE
+    book so rehearsal fills never pollute the gate evidence in trades.db. Mutates cfg:
+    symbol/underlying/tradingClass from the config `rehearsal:` block, and points the
+    trade log at trades_rehearsal.db. Risk state moves to its own file (caller passes it)."""
+    r = cfg._data.get("rehearsal") or {}
+    cfg._data["symbol"] = r.get("symbol", "XSP")
+    ib = cfg._data["execution"]["ibkr"]
+    ib["underlying_sec_type"] = r.get("underlying_sec_type", "IND")
+    ib["trading_class"] = r.get("trading_class", "XSP")
+    cfg._data.setdefault("memory", {})["trade_log_path"] = r.get("db", "trades_rehearsal.db")
+    return cfg
+
+
+REHEARSAL_RISK_STATE = "logs/risk_state_rehearsal.json"
+
+
 def healthcheck(cfg, mode: str = "paper") -> bool:
     """Minimal AUTHENTICATED check for schedulers: the port being open is not enough —
     Gateway can be running but logged out (e.g. after weekly 2FA expiry). Connect, demand
@@ -98,7 +128,9 @@ def selftest(cfg, mode: str = "paper") -> bool:
 
     feed = IBKRFeed(host=ib.host, port=port, client_id=ib.client_id + 5, symbol=cfg.symbol,
                     exchange=ib.exchange, currency=ib.currency,
-                    market_data_type=int(ib.get("market_data_type", 3)))
+                    market_data_type=int(ib.get("market_data_type", 3)),
+                    underlying_sec_type=str(ib.get("underlying_sec_type", "STK")),
+                    trading_class=str(ib.get("trading_class", "") or ""))
     broker = IBKRBroker(cfg, mode=mode)
     from datetime import datetime as _dt, timedelta as _td
 
@@ -166,7 +198,8 @@ def _assert_eastern_host() -> None:
             "export ODTE_TZ_OVERRIDE=1 to bypass.")
 
 
-def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
+def run(cfg, mode: str, once: bool = False, daily: bool = False,
+        rehearsal: bool = False) -> None:
     """`daily=True` exits cleanly after the session close (for schedulers like launchd)."""
     _assert_eastern_host()
     setup_logging(cfg.logging.get("level", "INFO"), cfg.logging.get("dir", "logs"))
@@ -176,7 +209,9 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
     port = ib.paper_port if mode == "paper" else ib.live_port
     feed = IBKRFeed(host=ib.host, port=port, client_id=ib.client_id + 1, symbol=cfg.symbol,
                     exchange=ib.exchange, currency=ib.currency,
-                    market_data_type=int(ib.get("market_data_type", 3)))
+                    market_data_type=int(ib.get("market_data_type", 3)),
+                    underlying_sec_type=str(ib.get("underlying_sec_type", "STK")),
+                    trading_class=str(ib.get("trading_class", "") or ""))
     feed.connect()
 
     broker = IBKRBroker(cfg, mode=mode)
@@ -192,7 +227,7 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
     siggen = SignalGenerator(cfg)
     # Durable daily guardrails: the halt / trade-cap / loss-brake must survive a watchdog
     # force-exit + launchd relaunch, otherwise a crash re-arms a fresh loss budget.
-    pm = PositionManager(cfg, state_path=RISK_STATE_PATH)
+    pm = PositionManager(cfg, state_path=(REHEARSAL_RISK_STATE if rehearsal else RISK_STATE_PATH))
     monitor = PerformanceMonitor()
     anomaly = AnomalyDetector(cfg)
 
@@ -511,6 +546,14 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
     except (ValueError, OSError):  # not the main thread
         pass
 
+    # P0 2026-07-24: a mid-session socket drop left the feed 'alive but disconnected' for
+    # 3.5 hours — the loop erred politely every poll, the watchdog (which only detects a HUNG
+    # loop) stayed green, and no entries were possible all afternoon. After RECONNECT_AFTER
+    # consecutive data failures, rebuild the feed session. State is mirrored to
+    # logs/feed_state.json so the dashboard shows a "Feed connection" light.
+    RECONNECT_AFTER = 6                     # ~3 min at a 30s poll
+    feed_fails = 0
+
     try:
         while True:
             now = datetime.now()
@@ -521,7 +564,16 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                 bars = feed.latest_bars(lookback_minutes=120)
             except Exception as exc:
                 log.error("Data fetch failed: %s", exc)
+            write_feed_state(bars is not None and not bars.empty)
             if bars is None or bars.empty:
+                feed_fails += 1
+                if feed_fails >= RECONNECT_AFTER:
+                    log.warning("Feed dead for %d polls — rebuilding the IBKR session.",
+                                feed_fails)
+                    if feed.reconnect():
+                        alerter.send("Feed RECONNECTED after outage.", level="WARN")
+                        feed_fails = 0
+                    # else: retry next poll; counter keeps the attempts coming
                 # A market-data outage must NEVER strand an open 0DTE position. Previously the
                 # loop `continue`d here, skipping the whole management state machine — including
                 # the 15:55 flatten — while the watchdog stayed green. Manage positions anyway:
@@ -538,6 +590,7 @@ def run(cfg, mode: str, once: bool = False, daily: bool = False) -> None:
                 _time.sleep(poll)
                 continue
 
+            feed_fails = 0
             price = float(bars["close"].iloc[-1])
 
             # 1. Manage open spreads on real leg prices (incl. strike defense); EOD flatten.
@@ -852,10 +905,17 @@ def main() -> None:
                         help="authenticated Gateway check for schedulers; exit 0/1")
     parser.add_argument("--flatten", action="store_true",
                         help="recovery: close ALL option positions in the account and exit")
+    parser.add_argument("--rehearsal", action="store_true",
+                        help="XSP dress rehearsal: separate trades_rehearsal.db + XSP contract "
+                             "wiring (docs/XSP_REHEARSAL_RUNBOOK.md); paper only")
     args = parser.parse_args()
 
     cfg = load_config()
     mode = args.mode or cfg.execution.get("mode", "paper")
+    if getattr(args, "rehearsal", False):
+        if mode != "paper":
+            raise SystemExit("--rehearsal is PAPER-ONLY.")
+        apply_rehearsal(cfg)
     if mode == "live" and not cfg.execution.get("live_confirmed", False):
         raise SystemExit("Refusing live mode: set execution.live_confirmed: true in config first.")
     if args.healthcheck:
@@ -890,7 +950,8 @@ def main() -> None:
         raise SystemExit(2)
     if args.selftest:
         raise SystemExit(0 if selftest(cfg, mode) else 1)
-    run(cfg, mode, once=args.once, daily=args.daily)
+    run(cfg, mode, once=args.once, daily=args.daily,
+        rehearsal=getattr(args, "rehearsal", False))
 
 
 if __name__ == "__main__":

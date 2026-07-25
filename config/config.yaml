@@ -179,3 +179,11 @@ alerts:
 logging:
   level: INFO
   dir: logs
+
+# XSP dress rehearsal (docs/XSP_REHEARSAL_RUNBOOK.md). Activated ONLY by `--rehearsal`
+# (paper-only): separate book, XSP contract wiring. The main config above stays SPY.
+rehearsal:
+  symbol: XSP
+  underlying_sec_type: IND     # XSP is a CBOE Index, not a Stock
+  trading_class: XSP           # option class for qualification/routing
+  db: trades_rehearsal.db      # rehearsal fills NEVER enter the gate-evidence book

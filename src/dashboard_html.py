@@ -288,6 +288,27 @@ def _arch_and_status_html(db_path: str) -> str:
                 f'<td class="n"><span class="{cls}">{val}</span></td></tr>')
     r = row("Bot heartbeat", "active" if heartbeat else "no session running",
             "pos" if heartbeat else "mut")
+    # Feed-connection light (P0 2026-07-24: 'alive but disconnected' was invisible).
+    fs, fs_txt, fs_cls = None, "unknown", "mut"
+    try:
+        import json as _json
+        fs = _json.loads((logs / "feed_state.json").read_text())
+    except Exception:
+        pass
+    if fs is not None:
+        age_ok = True
+        try:
+            age_ok = (datetime.now()
+                      - datetime.fromisoformat(fs.get("ts", ""))).total_seconds() < 180
+        except Exception:
+            age_ok = False
+        if not heartbeat:
+            fs_txt, fs_cls = "n/a (no session)", "mut"
+        elif fs.get("connected") and age_ok:
+            fs_txt, fs_cls = "connected", "pos"
+        else:
+            fs_txt, fs_cls = f'DISCONNECTED (since {fs.get("ts", "?")[11:16]})', "neg"
+    r += row("Feed connection", fs_txt, fs_cls)
     r += row("Quote logger", "recording" if logger_fresh else "idle",
              "pos" if logger_fresh else "mut")
     r += row("Morning test gate", tg or "not yet run", "pos" if "PASS" in tg

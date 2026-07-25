@@ -24,14 +24,26 @@ log = get_logger("ibkr_feed")
 class IBKRFeed:
     def __init__(self, host: str = "127.0.0.1", port: int = 7497, client_id: int = 18,
                  symbol: str = "SPY", exchange: str = "SMART", currency: str = "USD",
-                 market_data_type: int = 3):
+                 market_data_type: int = 3, underlying_sec_type: str = "STK",
+                 trading_class: str = ""):
         self.host, self.port, self.client_id = host, port, client_id
         self.symbol, self.exchange, self.currency = symbol, exchange, currency
         # 1=live (needs a real-time OPRA subscription), 2=frozen, 3=delayed, 4=delayed-frozen.
         # Default 3 works with no entitlement. Flip to 1 in config once you subscribe — else the
         # bot keeps requesting DELAYED quotes even with a live feed and nothing changes.
         self.market_data_type = market_data_type
+        # XSP migration (Section 10): the underlying is an INDEX on CBOE, not a Stock — a
+        # qualified Stock("XSP") returns nothing and the feed silently yields no bars.
+        # trading_class disambiguates the option class (XSP options -> "XSP").
+        self.underlying_sec_type = underlying_sec_type.upper()
+        self.trading_class = trading_class
         self.ib = None
+
+    def _underlying(self):
+        from ib_insync import Index, Stock
+        if self.underlying_sec_type == "IND":
+            return Index(self.symbol, "CBOE", self.currency)
+        return Stock(self.symbol, self.exchange, self.currency)
 
     def connect(self) -> bool:
         try:
@@ -46,11 +58,27 @@ class IBKRFeed:
         log.info("IBKR feed connected on %s:%d", self.host, self.port)
         return True
 
+    def reconnect(self) -> bool:
+        """Tear down and rebuild the session. P0 2026-07-24: a mid-session socket drop left
+        the loop 'alive but disconnected' for 3.5 hours — the watchdog only sees a HUNG loop,
+        not a politely-erroring one. The main loop calls this after N consecutive data
+        failures. Fail-soft: returns False on any error; caller retries next poll."""
+        try:
+            if self.ib is not None:
+                try:
+                    self.ib.disconnect()
+                except Exception:
+                    pass
+            return self.connect()
+        except Exception as exc:
+            log.warning("feed reconnect failed: %s", exc)
+            return False
+
     # --- underlying ------------------------------------------------------------
     def latest_bars(self, lookback_minutes: int = 120) -> pd.DataFrame:
-        from ib_insync import Index, Stock
+        from ib_insync import Index
 
-        spy = Stock(self.symbol, self.exchange, self.currency)
+        spy = self._underlying()
         self.ib.qualifyContracts(spy)
         df = self._hist(spy, "1 D", "1 min")
         try:
@@ -73,7 +101,8 @@ class IBKRFeed:
 
         strike = float(round(spot)) + strike_offset
         opt = Option(self.symbol, expiry.strftime("%Y%m%d"), strike, right,
-                     self.exchange, currency=self.currency)
+                     self.exchange, currency=self.currency,
+                     tradingClass=self.trading_class or "")
         try:
             self.ib.qualifyContracts(opt)
         except Exception as exc:
@@ -113,7 +142,8 @@ class IBKRFeed:
         legs = []
         for strike in (short_strike, long_strike):
             opt = Option(self.symbol, expiry.strftime("%Y%m%d"), strike, right,
-                         self.exchange, currency=self.currency)
+                         self.exchange, currency=self.currency,
+                         tradingClass=self.trading_class or "")
             try:
                 self.ib.qualifyContracts(opt)
             except Exception as exc:
@@ -139,10 +169,8 @@ class IBKRFeed:
         None when unavailable. Used by the opening-gap guard: 0DTE positions never survive
         overnight here, but ENTERING into a violent post-gap open is a real risk the
         anomaly detector can't see until it has warmed up."""
-        from ib_insync import Stock
-
         try:
-            spy = Stock(self.symbol, self.exchange, self.currency)
+            spy = self._underlying()
             self.ib.qualifyContracts(spy)
             bars = self.ib.reqHistoricalData(
                 spy, endDateTime="", durationStr="2 D", barSizeSetting="1 day",
